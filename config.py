@@ -16,3 +16,7 @@ LOG_FILE = os.getenv('LOG_FILE', 'app.log')
 # Analysis limits
 MAX_TEXT_LENGTH = int(os.getenv('MAX_TEXT_LENGTH', '10000'))
 TOP_WORDS = int(os.getenv('TOP_WORDS', '20'))
+
+# Web dashboard
+DASHBOARD_HOST = os.getenv('DASHBOARD_HOST', '127.0.0.1')
+DASHBOARD_PORT = int(os.getenv('DASHBOARD_PORT', '5000'))

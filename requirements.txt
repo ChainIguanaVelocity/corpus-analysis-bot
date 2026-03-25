@@ -3,8 +3,7 @@ python-telegram-bot==20.7
 python-dotenv==1.0.1
 
 # Text analysis
-pymorphy2==0.9.1
-pymorphy2-dicts-ru==2.4.417127.4579844
+pymorphy3==2.0.6
 
 # Data science / visualization
 numpy==1.26.4
@@ -20,6 +19,9 @@ python-docx==1.1.0
 
 # HTTP
 requests==2.32.3
+
+# Web dashboard
+flask==3.1.0
 
 # Database
 sqlalchemy==2.0.25

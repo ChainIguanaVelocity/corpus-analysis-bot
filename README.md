@@ -70,6 +70,39 @@ The bot will start polling Telegram for updates. Press `Ctrl+C` to stop.
 
 ---
 
+## Web Dashboard
+
+A lightweight status dashboard starts automatically alongside the bot at:
+
+```
+http://localhost:5000
+```
+
+It shows:
+
+- **Bot status** (running / stopped) and the time it started
+- **Total analyses** performed (persisted in SQLite)
+- **20 most recent analysis records** with statistics for each
+
+The dashboard auto-refreshes every 30 seconds.
+
+A JSON status endpoint is also available at `http://localhost:5000/api/status`.
+
+You can change the host/port in `.env`:
+
+```dotenv
+DASHBOARD_HOST=127.0.0.1  # set to 0.0.0.0 to expose on all interfaces
+DASHBOARD_PORT=5000        # port number
+```
+
+> **Production note:** the built-in Flask development server is used by default.
+> For production deployments, run the app behind a WSGI server such as Gunicorn:
+> ```bash
+> gunicorn "dashboard:app"
+> ```
+
+---
+
 ## Bot Commands
 
 | Command | Description |
@@ -91,8 +124,9 @@ The bot will start polling Telegram for updates. Press `Ctrl+C` to stop.
 
 ```
 corpus-analysis-bot/
-├── main.py            # Entry point
+├── main.py            # Entry point (starts bot + dashboard)
 ├── bot.py             # Telegram bot command handlers (python-telegram-bot v20)
+├── dashboard.py       # Flask web dashboard
 ├── text_analyzer.py   # Text tokenization, lemmatization, frequency analysis
 ├── visualizer.py      # Chart and word cloud generation (matplotlib / wordcloud)
 ├── database.py        # SQLite database wrapper
@@ -109,10 +143,11 @@ corpus-analysis-bot/
 | Library | Purpose |
 |---------|---------|
 | `python-telegram-bot` | Telegram Bot API client |
-| `pymorphy2` | Russian morphological analyser + tokenization |
+| `pymorphy3` | Russian morphological analyser + tokenization (Python 3.10+ compatible) |
 | `matplotlib` / `seaborn` | Charts |
 | `wordcloud` | Word cloud image generation |
 | `python-dotenv` | `.env` file loading |
+| `flask` | Web dashboard |
 
 ---
 

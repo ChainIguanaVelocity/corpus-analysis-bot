@@ -1,6 +1,6 @@
 import re
 from collections import Counter
-import pymorphy2
+import pymorphy3
 
 # Common Russian stopwords — replaces the nltk.corpus.stopwords dependency.
 _RUSSIAN_STOPWORDS = {
@@ -31,7 +31,7 @@ _TOKEN_RE = re.compile(r'[^\W\d_]+|\d+', re.UNICODE)
 
 class TextAnalyzer:
     def __init__(self):
-        self.morph = pymorphy2.MorphAnalyzer()
+        self.morph = pymorphy3.MorphAnalyzer()
         self.stop_words = _RUSSIAN_STOPWORDS
 
     def tokenize(self, text):
