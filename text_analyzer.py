@@ -1,55 +1,54 @@
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize, sent_tokenize
-from nltk.probability import FreqDist
-import pymorphy2
-from collections import Counter
 import re
+from collections import Counter
+import pymorphy2
 
+# Common Russian stopwords — replaces the nltk.corpus.stopwords dependency.
+_RUSSIAN_STOPWORDS = {
+    'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а',
+    'то', 'все', 'она', 'так', 'его', 'но', 'да', 'ты', 'к', 'у', 'же',
+    'вы', 'за', 'бы', 'по', 'только', 'ее', 'мне', 'было', 'вот', 'от',
+    'меня', 'еще', 'нет', 'о', 'из', 'ему', 'теперь', 'когда', 'даже',
+    'ну', 'вдруг', 'ли', 'если', 'уже', 'или', 'ни', 'быть', 'был', 'него',
+    'до', 'вас', 'нибудь', 'опять', 'уж', 'вам', 'ведь', 'там', 'потом',
+    'себя', 'ничего', 'ей', 'может', 'они', 'тут', 'где', 'есть', 'надо',
+    'ней', 'для', 'мы', 'тебя', 'их', 'чем', 'была', 'сам', 'чтоб', 'без',
+    'будто', 'человек', 'чего', 'раз', 'тоже', 'себе', 'под', 'будет',
+    'ж', 'тогда', 'кто', 'этот', 'того', 'потому', 'этого', 'какой',
+    'совсем', 'ним', 'здесь', 'этом', 'один', 'почти', 'мой', 'тем',
+    'чтобы', 'нее', 'сейчас', 'были', 'куда', 'зачем', 'всех', 'никогда',
+    'можно', 'при', 'наконец', 'два', 'об', 'другой', 'хоть', 'после',
+    'над', 'больше', 'тот', 'через', 'эти', 'нас', 'про', 'всего', 'них',
+    'какая', 'много', 'разве', 'три', 'эту', 'моя', 'впрочем', 'хорошо',
+    'свою', 'этой', 'перед', 'иногда', 'лучше', 'чуть', 'том', 'нельзя',
+    'такой', 'им', 'более', 'всегда', 'конечно', 'всю', 'между',
+}
 
-def _ensure_nltk_data():
-    """Download required NLTK datasets only if not already present."""
-    for resource, path in [
-        ('punkt', 'tokenizers/punkt'),
-        ('punkt_tab', 'tokenizers/punkt_tab'),
-        ('stopwords', 'corpora/stopwords'),
-    ]:
-        try:
-            nltk.data.find(path)
-        except LookupError:
-            nltk.download(resource, quiet=True)
-
-
-_ensure_nltk_data()
+# Sentence boundary: split on . ! ? followed by whitespace or end-of-string.
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+# Token: sequences of Unicode letters or digits.
+_TOKEN_RE = re.compile(r'[^\W\d_]+|\d+', re.UNICODE)
 
 
 class TextAnalyzer:
     def __init__(self):
         self.morph = pymorphy2.MorphAnalyzer()
-        self.stop_words = set(stopwords.words('russian'))
+        self.stop_words = _RUSSIAN_STOPWORDS
 
     def tokenize(self, text):
-        tokens = word_tokenize(text.lower())
-        return [token for token in tokens if token.isalnum()]
+        return _TOKEN_RE.findall(text.lower())
 
     def lemmatize(self, tokens):
-        lemmas = []
-        for token in tokens:
-            parsed = self.morph.parse(token)[0]
-            lemmas.append(parsed.normal_form)
-        return lemmas
+        return [self.morph.parse(token)[0].normal_form for token in tokens]
 
     def remove_stopwords(self, tokens):
         return [token for token in tokens if token not in self.stop_words]
 
     def get_frequency_distribution(self, tokens):
-        freq_dist = FreqDist(tokens)
-        return dict(freq_dist.most_common(50))
+        return dict(Counter(tokens).most_common(50))
 
     def get_text_stats(self, text):
-        sentences = sent_tokenize(text)
+        sentences = [s for s in _SENTENCE_RE.split(text.strip()) if s]
         tokens = self.tokenize(text)
-        words = self.remove_stopwords(tokens)
         return {
             'total_words': len(tokens),
             'unique_words': len(set(tokens)),
