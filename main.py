@@ -18,9 +18,6 @@ import tempfile
 from collections import Counter
 from sqlite3 import Error
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import telebot
 from dotenv import load_dotenv
 from wordcloud import WordCloud
@@ -183,45 +180,22 @@ class TextAnalyzer:
 # Visualiser  (previously visualizer.py)
 # ---------------------------------------------------------------------------
 
-def _save_figure(fig):
-    """Save a matplotlib figure to a temporary PNG file and return its path."""
-    tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-    fig.savefig(tmp.name, format='png', bbox_inches='tight')
-    tmp.close()
-    return tmp.name
-
-
 class DataVisualizer:
-    def plot_frequency_distribution(self, freq_dict, title='Word Frequency Distribution'):
-        """Plot top-N word frequencies and save to a temp file. Returns file path."""
-        top = dict(list(sorted(freq_dict.items(), key=lambda x: x[1], reverse=True))[:20])
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.bar(top.keys(), top.values(), color='steelblue')
-        ax.set_title(title)
-        ax.set_xlabel('Word')
-        ax.set_ylabel('Frequency')
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-        path = _save_figure(fig)
-        plt.close(fig)
-        return path
-
     def plot_word_cloud(self, freq_dict_or_text, title='Word Cloud'):
-        """Generate a word cloud image and save to a temp file. Returns file path."""
+        """Generate a word cloud image and save to a temp file. Returns file path.
+
+        The caller is responsible for deleting the returned file after use.
+        """
         if isinstance(freq_dict_or_text, dict):
             wc = WordCloud(width=800, height=400, background_color='white', max_words=200)
             wc = wc.generate_from_frequencies(freq_dict_or_text)
         else:
             wc = WordCloud(width=800, height=400, background_color='white', max_words=200)
             wc = wc.generate(freq_dict_or_text)
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.imshow(wc, interpolation='bilinear')
-        ax.axis('off')
-        ax.set_title(title)
-        plt.tight_layout()
-        path = _save_figure(fig)
-        plt.close(fig)
-        return path
+        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        tmp.close()
+        wc.to_file(tmp.name)
+        return tmp.name
 
 # ---------------------------------------------------------------------------
 # Bot globals
@@ -303,7 +277,7 @@ def analyze(message: telebot.types.Message) -> None:
 
 @bot.message_handler(commands=['frequency'])
 def frequency(message: telebot.types.Message) -> None:
-    """/frequency <text> — send a frequency distribution bar chart."""
+    """/frequency <text> — send top word frequencies as a text list."""
     text = _get_text(message)
     if text is None:
         return
@@ -313,12 +287,11 @@ def frequency(message: telebot.types.Message) -> None:
         bot.reply_to(message, 'Частотæйы анализæн дзырдтæ нæй.')
         return
 
-    image_path = vis.plot_frequency_distribution(freq_dict, title='Дзырдты частотæ')
-    try:
-        with open(image_path, 'rb') as img:
-            bot.send_photo(message.chat.id, img, caption='Дзырдты частотæ')
-    finally:
-        os.unlink(image_path)
+    top = sorted(freq_dict.items(), key=lambda x: x[1], reverse=True)[:20]
+    lines = ['📊 *Дзырдты частотæ:*\n\n']
+    for word, count in top:
+        lines.append(f'  {word}: {count}\n')
+    bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
 
 
 @bot.message_handler(commands=['wordcloud'])
