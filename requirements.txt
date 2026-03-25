@@ -2,23 +2,7 @@
 python-telegram-bot==20.7
 python-dotenv==1.0.1
 
-# Text analysis
-# (pymorphy2 removed — Ossetian morphology handled via simple tokenisation)
-
-# Data science / visualization
-numpy==1.26.4
-pandas==2.1.4
+# Visualisation
 matplotlib==3.8.2
-seaborn==0.13.2
 wordcloud==1.9.3
-scikit-learn==1.4.0
 
-# File parsing
-PyPDF2==3.0.1
-python-docx==1.1.0
-
-# HTTP
-requests==2.32.3
-
-# Database
-sqlalchemy==2.0.25

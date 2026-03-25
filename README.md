@@ -91,12 +91,7 @@ The bot will start polling Telegram for updates. Press `Ctrl+C` to stop.
 
 ```
 corpus-analysis-bot/
-├── main.py            # Entry point
-├── bot.py             # Telegram bot command handlers (python-telegram-bot v20)
-├── text_analyzer.py   # Text tokenization, lemmatization, frequency analysis
-├── visualizer.py      # Chart and word cloud generation (matplotlib / wordcloud)
-├── database.py        # SQLite database wrapper
-├── config.py          # Configuration loaded from environment variables
+├── main.py            # Single entry point — all bot logic in one file
 ├── requirements.txt   # Python dependencies
 ├── .env.example       # Environment variable template
 └── .gitignore
@@ -109,7 +104,7 @@ corpus-analysis-bot/
 | Library | Purpose |
 |---------|---------|
 | `python-telegram-bot` | Telegram Bot API client |
-| `matplotlib` / `seaborn` | Charts |
+| `matplotlib` | Charts |
 | `wordcloud` | Word cloud image generation |
 | `python-dotenv` | `.env` file loading |
 
