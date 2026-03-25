@@ -1,6 +1,6 @@
 import re
 from collections import Counter
-import pymorphy2
+import pymorphy3 as pymorphy2
 
 # Common Russian stopwords — replaces the nltk.corpus.stopwords dependency.
 _RUSSIAN_STOPWORDS = {
