@@ -1,4 +1,4 @@
-"""Ирон корпусы анализы бот — single-file entry point.
+"""Бот анализа текстового корпуса — единый файл запуска.
 
 Usage:
     python main.py
@@ -216,12 +216,12 @@ def _get_text(message: telebot.types.Message) -> str | None:
     parts = message.text.split(maxsplit=1)
     text = parts[1].strip() if len(parts) > 1 else ''
     if not text:
-        bot.reply_to(message, 'Командæйы фæстæ текст ныффыс. Æппæлæг:\n/analyze Ирон æвзаг')
+        bot.reply_to(message, 'Введите текст после команды. Пример:\n/analyze текст для анализа')
         return None
     if len(text) > MAX_TEXT_LENGTH:
         bot.reply_to(
             message,
-            f'Текст æппынæддæр рæсугъд у. Хистæр бæрц: {MAX_TEXT_LENGTH} знаджы.',
+            f'Текст слишком длинный. Максимальная длина: {MAX_TEXT_LENGTH} символов.',
         )
         return None
     return text
@@ -232,14 +232,14 @@ def start(message: telebot.types.Message) -> None:
     """Send a welcome message explaining available commands."""
     bot.reply_to(
         message,
-        '👋 Хæрзбон! *Ирон корпусы анализы бот*-мæ хæрзбон!\n\n'
-        'Бот ирон æвзаджы текстытæ анализ кæны.\n\n'
-        'Фæрæзтæ:\n'
-        '  /analyze <текст> — бæрæггæнæнтæ + хъуыддагдæр дзырдтæ\n'
-        '  /frequency <текст> — дзырдты частотæйы диаграммæ\n'
-        '  /wordcloud <текст> — дзырдты облакæ\n'
-        '  /stats <текст> — текстæн лæмæгъ статистикæ\n\n'
-        'Командæйы фæстæ текст ныффыс.',
+        '👋 Добро пожаловать в *Бот анализа корпуса*!\n\n'
+        'Бот анализирует тексты.\n\n'
+        'Команды:\n'
+        '  /analyze <текст> — статистика + самые частые слова\n'
+        '  /frequency <текст> — диаграмма частотности слов\n'
+        '  /wordcloud <текст> — облако слов\n'
+        '  /stats <текст> — краткая статистика текста\n\n'
+        'Введите текст после команды.',
         parse_mode='Markdown',
     )
 
@@ -256,16 +256,16 @@ def analyze(message: telebot.types.Message) -> None:
     freq = dict(list(result['frequency'].items())[:TOP_WORDS])
 
     reply = (
-        f'📊 *Анализы хъуыддæгтæ*\n\n'
-        f'*Статистикæ:*\n'
-        f'  • Дзырдтæ (иугай): {stats["total_words"]}\n'
-        f'  • Нæмыгдæттон дзырдтæ: {stats["unique_words"]}\n'
-        f'  • Хъуырытæ: {stats["sentences"]}\n'
-        f'  • Дзырды æнцон дæргъ: {stats["avg_word_length"]:.2f}\n'
-        f'  • Лексикалон æнтысгæ: {stats["lexical_diversity"]:.2%}\n'
-        f'  • Токентæ: {result["tokens_count"]}\n'
-        f'  • Нæмыгдæттон леммæтæ: {result["lemmas_count"]}\n\n'
-        f'*Хистæр {TOP_WORDS} дзырды:*\n'
+        f'📊 *Результаты анализа*\n\n'
+        f'*Статистика:*\n'
+        f'  • Слов (всего): {stats["total_words"]}\n'
+        f'  • Уникальных слов: {stats["unique_words"]}\n'
+        f'  • Предложений: {stats["sentences"]}\n'
+        f'  • Средняя длина слова: {stats["avg_word_length"]:.2f}\n'
+        f'  • Лексическое разнообразие: {stats["lexical_diversity"]:.2%}\n'
+        f'  • Токенов: {result["tokens_count"]}\n'
+        f'  • Уникальных лемм: {result["lemmas_count"]}\n\n'
+        f'*Топ {TOP_WORDS} слов:*\n'
     )
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
@@ -284,11 +284,11 @@ def frequency(message: telebot.types.Message) -> None:
 
     freq_dict = analyzer.analyze(text)['frequency']
     if not freq_dict:
-        bot.reply_to(message, 'Частотæйы анализæн дзырдтæ нæй.')
+        bot.reply_to(message, 'Нет слов для частотного анализа.')
         return
 
     top = sorted(freq_dict.items(), key=lambda x: x[1], reverse=True)[:20]
-    lines = ['📊 *Дзырдты частотæ:*\n\n']
+    lines = ['📊 *Частота слов:*\n\n']
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
     bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
@@ -303,13 +303,13 @@ def wordcloud(message: telebot.types.Message) -> None:
 
     freq_dict = analyzer.analyze(text)['frequency']
     if not freq_dict:
-        bot.reply_to(message, 'Дзырдты облакæ аразынæн дзырдтæ нæй.')
+        bot.reply_to(message, 'Нет слов для создания облака слов.')
         return
 
-    image_path = vis.plot_word_cloud(freq_dict, title='Дзырдты облакæ')
+    image_path = vis.plot_word_cloud(freq_dict, title='Облако слов')
     try:
         with open(image_path, 'rb') as img:
-            bot.send_photo(message.chat.id, img, caption='Дзырдты облакæ')
+            bot.send_photo(message.chat.id, img, caption='Облако слов')
     finally:
         os.unlink(image_path)
 
@@ -323,12 +323,12 @@ def stats(message: telebot.types.Message) -> None:
 
     s = analyzer.get_text_stats(text)
     reply = (
-        f'📈 *Текстæн статистикæ*\n\n'
-        f'  • Дзырдтæ (иугай): {s["total_words"]}\n'
-        f'  • Нæмыгдæттон дзырдтæ: {s["unique_words"]}\n'
-        f'  • Хъуырытæ: {s["sentences"]}\n'
-        f'  • Дзырды æнцон дæргъ: {s["avg_word_length"]:.2f}\n'
-        f'  • Лексикалон æнтысгæ: {s["lexical_diversity"]:.2%}\n'
+        f'📈 *Статистика текста*\n\n'
+        f'  • Слов (всего): {s["total_words"]}\n'
+        f'  • Уникальных слов: {s["unique_words"]}\n'
+        f'  • Предложений: {s["sentences"]}\n'
+        f'  • Средняя длина слова: {s["avg_word_length"]:.2f}\n'
+        f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
     bot.reply_to(message, reply, parse_mode='Markdown')
 
