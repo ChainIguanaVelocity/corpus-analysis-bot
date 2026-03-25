@@ -2,7 +2,8 @@
 python-telegram-bot==20.7
 python-dotenv==1.0.1
 
-# Visualisation
-matplotlib==3.8.2
-wordcloud==1.9.3
+# Visualisation — versions pinned for Python 3.13 wheel availability
+numpy~=2.0
+matplotlib~=3.9
+wordcloud~=1.9.4
 
