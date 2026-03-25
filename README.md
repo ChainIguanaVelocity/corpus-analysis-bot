@@ -1,12 +1,12 @@
-# Corpus Analysis Bot
+# Ирон корпусы анализы бот / Ossetian Corpus Analysis Bot
 
-A Telegram bot for linguistic and statistical analysis of text corpora. Supports word frequency analysis, lemmatization, stopword removal, visualizations (bar charts & word clouds), and per-user analysis history stored in SQLite.
+A Telegram bot for linguistic and statistical analysis of **Ossetian (Iron dialect)** text corpora. Supports word frequency analysis, stopword removal, visualisations (bar charts & word clouds), and per-user analysis history stored in SQLite.
 
 ---
 
 ## Features
 
-- **Text Analysis** (`/analyze`) — tokenization, lemmatization (Russian & English via pymorphy2), frequency distribution, and a full statistics summary.
+- **Text Analysis** (`/analyze`) — tokenisation, Ossetian stopword removal, frequency distribution, and a full statistics summary.
 - **Frequency Chart** (`/frequency`) — returns a bar chart of the top-20 most frequent words.
 - **Word Cloud** (`/wordcloud`) — generates a word cloud image from the input text.
 - **Statistics** (`/stats`) — word count, unique words, sentence count, average word length, and lexical diversity.
@@ -82,7 +82,7 @@ The bot will start polling Telegram for updates. Press `Ctrl+C` to stop.
 
 **Example:**
 ```
-/analyze Привет! Это тестовый текст для анализа корпуса.
+/analyze Ирон æвзаг — алы рæстæджы дæр зæрдæмæ цæуы.
 ```
 
 ---
@@ -109,7 +109,6 @@ corpus-analysis-bot/
 | Library | Purpose |
 |---------|---------|
 | `python-telegram-bot` | Telegram Bot API client |
-| `pymorphy2` | Russian morphological analyser + tokenization |
 | `matplotlib` / `seaborn` | Charts |
 | `wordcloud` | Word cloud image generation |
 | `python-dotenv` | `.env` file loading |

@@ -1,44 +1,50 @@
 import re
 from collections import Counter
-import pymorphy2
 
-# Common Russian stopwords — replaces the nltk.corpus.stopwords dependency.
-_RUSSIAN_STOPWORDS = {
-    'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а',
-    'то', 'все', 'она', 'так', 'его', 'но', 'да', 'ты', 'к', 'у', 'же',
-    'вы', 'за', 'бы', 'по', 'только', 'ее', 'мне', 'было', 'вот', 'от',
-    'меня', 'еще', 'нет', 'о', 'из', 'ему', 'теперь', 'когда', 'даже',
-    'ну', 'вдруг', 'ли', 'если', 'уже', 'или', 'ни', 'быть', 'был', 'него',
-    'до', 'вас', 'нибудь', 'опять', 'уж', 'вам', 'ведь', 'там', 'потом',
-    'себя', 'ничего', 'ей', 'может', 'они', 'тут', 'где', 'есть', 'надо',
-    'ней', 'для', 'мы', 'тебя', 'их', 'чем', 'была', 'сам', 'чтоб', 'без',
-    'будто', 'человек', 'чего', 'раз', 'тоже', 'себе', 'под', 'будет',
-    'ж', 'тогда', 'кто', 'этот', 'того', 'потому', 'этого', 'какой',
-    'совсем', 'ним', 'здесь', 'этом', 'один', 'почти', 'мой', 'тем',
-    'чтобы', 'нее', 'сейчас', 'были', 'куда', 'зачем', 'всех', 'никогда',
-    'можно', 'при', 'наконец', 'два', 'об', 'другой', 'хоть', 'после',
-    'над', 'больше', 'тот', 'через', 'эти', 'нас', 'про', 'всего', 'них',
-    'какая', 'много', 'разве', 'три', 'эту', 'моя', 'впрочем', 'хорошо',
-    'свою', 'этой', 'перед', 'иногда', 'лучше', 'чуть', 'том', 'нельзя',
-    'такой', 'им', 'более', 'всегда', 'конечно', 'всю', 'между',
+# Common Ossetian (Iron dialect) stopwords — function words, pronouns,
+# particles, conjunctions, and frequent auxiliary verb forms.
+_OSSETIAN_STOPWORDS = {
+    # Personal pronouns
+    'æз', 'ды', 'уый', 'мах', 'сымах', 'уыдон',
+    # Possessive particles / short pronouns
+    'мæ', 'дæ', 'йæ', 'нæ', 'уæ', 'сæ', 'мæн', 'дæу',
+    # Conjunctions and discourse particles
+    'æмæ', 'æви', 'фæлæ', 'уæдта', 'уæд', 'æрмæстдæр',
+    # Temporal / conditional conjunctions
+    'куы', 'куыд', 'кæд', 'амæ',
+    # Demonstratives and determiners
+    'уыцы', 'ацы', 'иу', 'иуæй',
+    # Negation
+    'ма', 'нæй',
+    # Common copula and auxiliary forms
+    'у', 'сты', 'уыд', 'уыдысты', 'уа', 'уой',
+    # Adverbs of place and time
+    'ам', 'уым', 'ныр', 'æрмæст', 'дæр', 'та',
+    # Postpositions / case-like particles
+    'æрдæм', 'æхсæн', 'фæстæ', 'размæ', 'хуызæн',
+    # Other high-frequency function words
+    'цы', 'чи', 'кæй', 'кæм', 'кæцæй',
+    'æй', 'ын', 'ыл', 'æнæ', 'дзы',
+    'уæм', 'сæм', 'ыф', 'æм',
 }
 
 # Sentence boundary: split on . ! ? followed by whitespace or end-of-string.
 _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
-# Token: sequences of Unicode letters or digits.
+# Token: sequences of Unicode letters (including æ / Æ) or digits.
 _TOKEN_RE = re.compile(r'[^\W\d_]+|\d+', re.UNICODE)
 
 
 class TextAnalyzer:
     def __init__(self):
-        self.morph = pymorphy2.MorphAnalyzer()
-        self.stop_words = _RUSSIAN_STOPWORDS
+        self.stop_words = _OSSETIAN_STOPWORDS
 
     def tokenize(self, text):
         return _TOKEN_RE.findall(text.lower())
 
     def lemmatize(self, tokens):
-        return [self.morph.parse(token)[0].normal_form for token in tokens]
+        # Ossetian morphological resources are not available via pymorphy2;
+        # return each token in its lowercase form as a stand-in for the lemma.
+        return list(tokens)
 
     def remove_stopwords(self, tokens):
         return [token for token in tokens if token not in self.stop_words]

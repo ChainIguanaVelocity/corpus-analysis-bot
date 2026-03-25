@@ -3,8 +3,7 @@ python-telegram-bot==20.7
 python-dotenv==1.0.1
 
 # Text analysis
-pymorphy2==0.9.1
-pymorphy2-dicts-ru==2.4.417231.4213458
+# (pymorphy2 removed — Ossetian morphology handled via simple tokenisation)
 
 # Data science / visualization
 numpy==1.26.4
