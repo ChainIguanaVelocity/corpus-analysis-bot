@@ -27,7 +27,7 @@ from wordcloud import WordCloud
 # ---------------------------------------------------------------------------
 load_dotenv()
 
-TELEGRAM_TOKEN: str = os.getenv('TELEGRAM_TOKEN', '')
+TELEGRAM_TOKEN = "7655484821:AAH-V6qCSQsKi216uIEMe1hw08mhq4erIx0"
 DB_FILE: str = os.getenv('DB_FILE', 'corpus_analysis.sqlite3')
 LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
 MAX_TEXT_LENGTH: int = int(os.getenv('MAX_TEXT_LENGTH', '10000'))
