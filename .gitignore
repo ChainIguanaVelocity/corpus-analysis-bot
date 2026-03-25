@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Environment variables — never commit secrets
+.env
+
+# Logs
+logs/
+*.log
+
+# SQLite database files
+*.sqlite3
+
+# Generated images
+*.png
+*.jpg
+
+# Virtual environment
+venv/
+ENV/
+env/
+.venv/
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Pytest
+.cache/
+.pytest_cache/
+
+# IDE files
+.idea/
+.vscode/
+
+# NLTK downloaded data (optional, can be re-downloaded)
+nltk_data/
