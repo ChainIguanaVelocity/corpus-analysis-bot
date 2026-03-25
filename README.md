@@ -70,6 +70,24 @@ The bot will start polling Telegram for updates. Press `Ctrl+C` to stop.
 
 ---
 
+## Interacting with the Bot
+
+The bot is a **Telegram** bot — you communicate with it through the [Telegram](https://telegram.org/) application (available on Android, iOS, Windows, macOS, Linux, and the web at [web.telegram.org](https://web.telegram.org/)).
+
+1. **Install Telegram** on your device or open [web.telegram.org](https://web.telegram.org/) in your browser.
+2. **Create your bot** via [@BotFather](https://t.me/BotFather) and copy the token it gives you into `.env` as `TELEGRAM_TOKEN`.
+3. **Start the server** on your machine: `python main.py`
+4. **Find your bot** in Telegram — search for the username you set in BotFather.
+5. **Send commands** in the chat, for example:
+   ```
+   /start
+   /analyze Привет! Это тестовый текст для анализа корпуса.
+   ```
+
+> The bot runs entirely on your machine. It must be running (step 3) for Telegram users to receive responses.
+
+---
+
 ## Bot Commands
 
 | Command | Description |
