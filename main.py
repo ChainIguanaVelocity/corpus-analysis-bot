@@ -21,9 +21,8 @@ from sqlite3 import Error
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import telebot
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
 from wordcloud import WordCloud
 
 # ---------------------------------------------------------------------------
@@ -55,8 +54,6 @@ class Database:
         """Create a database connection to a SQLite database."""
         self.conn = None
         try:
-            # check_same_thread=False is safe here because all async bot
-            # handler coroutines run in a single event-loop thread.
             self.conn = sqlite3.connect(db_file, check_same_thread=False)
             self._init_schema()
         except Error as e:
@@ -237,9 +234,30 @@ vis = DataVisualizer()
 # Bot handlers  (previously bot.py)
 # ---------------------------------------------------------------------------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+
+def _get_text(message: telebot.types.Message) -> str | None:
+    """Extract and validate the text argument from the command."""
+    parts = message.text.split(maxsplit=1)
+    text = parts[1].strip() if len(parts) > 1 else ''
+    if not text:
+        bot.reply_to(message, 'Командæйы фæстæ текст ныффыс. Æппæлæг:\n/analyze Ирон æвзаг')
+        return None
+    if len(text) > MAX_TEXT_LENGTH:
+        bot.reply_to(
+            message,
+            f'Текст æппынæддæр рæсугъд у. Хистæр бæрц: {MAX_TEXT_LENGTH} знаджы.',
+        )
+        return None
+    return text
+
+
+@bot.message_handler(commands=['start'])
+def start(message: telebot.types.Message) -> None:
     """Send a welcome message explaining available commands."""
-    await update.message.reply_text(
+    bot.reply_to(
+        message,
         '👋 Хæрзбон! *Ирон корпусы анализы бот*-мæ хæрзбон!\n\n'
         'Бот ирон æвзаджы текстытæ анализ кæны.\n\n'
         'Фæрæзтæ:\n'
@@ -252,23 +270,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def _get_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
-    """Extract and validate the text argument from the command."""
-    text = ' '.join(context.args).strip()
-    if not text:
-        await update.message.reply_text('Командæйы фæстæ текст ныффыс. Æппæлæг:\n/analyze Ирон æвзаг')
-        return None
-    if len(text) > MAX_TEXT_LENGTH:
-        await update.message.reply_text(
-            f'Текст æппынæддæр рæсугъд у. Хистæр бæрц: {MAX_TEXT_LENGTH} знаджы.'
-        )
-        return None
-    return text
-
-
-async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@bot.message_handler(commands=['analyze'])
+def analyze(message: telebot.types.Message) -> None:
     """/analyze <text> — run full analysis and return formatted results."""
-    text = await _get_text(update, context)
+    text = _get_text(message)
     if text is None:
         return
 
@@ -291,52 +296,55 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
 
-    user_id = update.effective_user.id
+    user_id = message.from_user.id
     db.insert_analysis((user_id, json.dumps(result['stats'])))
-    await update.message.reply_text(reply, parse_mode='Markdown')
+    bot.reply_to(message, reply, parse_mode='Markdown')
 
 
-async def frequency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@bot.message_handler(commands=['frequency'])
+def frequency(message: telebot.types.Message) -> None:
     """/frequency <text> — send a frequency distribution bar chart."""
-    text = await _get_text(update, context)
+    text = _get_text(message)
     if text is None:
         return
 
     freq_dict = analyzer.analyze(text)['frequency']
     if not freq_dict:
-        await update.message.reply_text('Частотæйы анализæн дзырдтæ нæй.')
+        bot.reply_to(message, 'Частотæйы анализæн дзырдтæ нæй.')
         return
 
     image_path = vis.plot_frequency_distribution(freq_dict, title='Дзырдты частотæ')
     try:
         with open(image_path, 'rb') as img:
-            await update.message.reply_photo(photo=img, caption='Дзырдты частотæ')
+            bot.send_photo(message.chat.id, img, caption='Дзырдты частотæ')
     finally:
         os.unlink(image_path)
 
 
-async def wordcloud(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@bot.message_handler(commands=['wordcloud'])
+def wordcloud(message: telebot.types.Message) -> None:
     """/wordcloud <text> — generate and send a word cloud image."""
-    text = await _get_text(update, context)
+    text = _get_text(message)
     if text is None:
         return
 
     freq_dict = analyzer.analyze(text)['frequency']
     if not freq_dict:
-        await update.message.reply_text('Дзырдты облакæ аразынæн дзырдтæ нæй.')
+        bot.reply_to(message, 'Дзырдты облакæ аразынæн дзырдтæ нæй.')
         return
 
     image_path = vis.plot_word_cloud(freq_dict, title='Дзырдты облакæ')
     try:
         with open(image_path, 'rb') as img:
-            await update.message.reply_photo(photo=img, caption='Дзырдты облакæ')
+            bot.send_photo(message.chat.id, img, caption='Дзырдты облакæ')
     finally:
         os.unlink(image_path)
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@bot.message_handler(commands=['stats'])
+def stats(message: telebot.types.Message) -> None:
     """/stats <text> — return brief text statistics."""
-    text = await _get_text(update, context)
+    text = _get_text(message)
     if text is None:
         return
 
@@ -349,7 +357,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f'  • Дзырды æнцон дæргъ: {s["avg_word_length"]:.2f}\n'
         f'  • Лексикалон æнтысгæ: {s["lexical_diversity"]:.2%}\n'
     )
-    await update.message.reply_text(reply, parse_mode='Markdown')
+    bot.reply_to(message, reply, parse_mode='Markdown')
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -359,16 +367,9 @@ def main() -> None:
     if not TELEGRAM_TOKEN:
         raise RuntimeError('TELEGRAM_TOKEN is not set. Please configure it in your .env file.')
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('analyze', analyze))
-    app.add_handler(CommandHandler('frequency', frequency))
-    app.add_handler(CommandHandler('wordcloud', wordcloud))
-    app.add_handler(CommandHandler('stats', stats))
-
     logger.info('Bot is starting...')
     try:
-        app.run_polling()
+        bot.infinity_polling()
     finally:
         db.close_connection()
         logger.info('Database connection closed.')

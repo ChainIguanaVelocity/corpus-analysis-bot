@@ -1,5 +1,5 @@
 # Telegram
-python-telegram-bot==20.7
+pyTelegramBotAPI~=4.32
 python-dotenv==1.0.1
 
 # Visualisation — versions pinned for Python 3.13 wheel availability

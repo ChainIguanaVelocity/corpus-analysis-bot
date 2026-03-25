@@ -103,7 +103,7 @@ corpus-analysis-bot/
 
 | Library | Purpose |
 |---------|---------|
-| `python-telegram-bot` | Telegram Bot API client |
+| `pyTelegramBotAPI` | Telegram Bot API client |
 | `matplotlib` | Charts |
 | `wordcloud` | Word cloud image generation |
 | `python-dotenv` | `.env` file loading |
