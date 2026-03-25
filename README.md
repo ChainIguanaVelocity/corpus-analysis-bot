@@ -117,6 +117,16 @@ corpus-analysis-bot/
 
 ---
 
+## Security Notes
+
+### NLTK known vulnerability (CVE — `nltk.app.wordnet_app` remote shutdown)
+
+All versions of NLTK up to and including 3.9.3 contain an unauthenticated remote-shutdown vulnerability in the `nltk.app.wordnet_app` web component. **No patched version is currently available.**
+
+**Mitigation:** This project only uses NLTK for tokenization (`nltk.tokenize`), stopwords (`nltk.corpus.stopwords`), and frequency analysis (`nltk.probability`). The vulnerable `nltk.app.wordnet_app` module is **never imported or started**, so the attack surface does not apply. Monitor the [NLTK releases](https://github.com/nltk/nltk/releases) and upgrade once a fix is published.
+
+---
+
 ## Contributing
 
 1. Fork the repository.

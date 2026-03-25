@@ -3,6 +3,10 @@ python-telegram-bot==20.7
 python-dotenv==1.0.1
 
 # Text analysis
+# Known vulnerability in nltk <= 3.9.3: unauthenticated remote shutdown via
+# nltk.app.wordnet_app (no patched version available). Mitigated by never
+# importing or starting nltk.app.wordnet_app — this project only uses
+# nltk.tokenize, nltk.corpus.stopwords, and nltk.probability.
 nltk==3.9.3
 pymorphy2==0.9.1
 pymorphy2-dicts-ru==2.4.417231.4213458
