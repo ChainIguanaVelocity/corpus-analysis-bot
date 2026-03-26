@@ -783,6 +783,50 @@ def load_corpus(message: telebot.types.Message) -> None:
     _send_corpus_record(message, name, record)
 
 
+# ---------------------------------------------------------------------------
+# Diacritical-insensitive search helpers for Ossetian
+# ---------------------------------------------------------------------------
+
+# Mapping of Ossetian diacritical variants to a canonical Cyrillic form.
+# "æ" (ash) is the standard IPA letter for the Ossetian "а" vowel, and both
+# "а" (Cyrillic/Latin a) and "æ" represent the same phoneme in different
+# transcription traditions.  Likewise "ӕ" (Cyrillic small letter ae) is the
+# same sound written with a different Unicode codepoint.
+# All variants are mapped to lowercase "а" because _normalize_ossetian()
+# lowercases text before applying this mapping.
+_OSSETIAN_CHAR_MAP: dict[str, str] = {
+    'æ':  'а',   # U+00E6 LATIN SMALL LETTER AE  → Cyrillic а
+    'Æ':  'а',   # U+00C6 LATIN CAPITAL LETTER AE → Cyrillic а (lowercased before lookup)
+    'ӕ':  'а',   # U+04D5 CYRILLIC SMALL LETTER AE
+    'Ӕ':  'а',   # U+04D4 CYRILLIC CAPITAL LETTER AE (lowercased before lookup)
+}
+
+
+def _normalize_ossetian(text: str) -> str:
+    """Return *text* lowercased and with Ossetian diacritical variants collapsed.
+
+    Characters that represent the same Ossetian phoneme in different
+    transcription systems are mapped to a single canonical form so that
+    e.g. "æе" and "ае" compare equal.
+    """
+    text = unicodedata.normalize('NFC', text.lower())
+    return text.translate(str.maketrans(_OSSETIAN_CHAR_MAP))
+
+
+def _word_matches_flexible(word_norm: str, sentence: str) -> bool:
+    """Return True if *word_norm* (already normalized) appears as a word in *sentence*.
+
+    Matching is:
+    - case-insensitive
+    - diacritical-insensitive (uses :func:`_normalize_ossetian`)
+    - whole-word (surrounded by non-word characters or sentence boundaries)
+    """
+    sentence_norm = _normalize_ossetian(sentence)
+    # Use word-boundary regex so "ае" does not match inside a longer word.
+    pattern = r'(?<!\w)' + re.escape(word_norm) + r'(?!\w)'
+    return bool(re.search(pattern, sentence_norm))
+
+
 def _do_search(message: telebot.types.Message, word: str) -> None:
     """Core search logic shared by /search command and button_search."""
     user_id = message.from_user.id
@@ -796,13 +840,13 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
         )
         return
 
-    word_lower = unicodedata.normalize('NFC', word.lower())
+    word_norm = _normalize_ossetian(word)
     matches = []  # list of (sentence_text, text_idx, sent_idx)
 
     for text_idx, text in enumerate(texts):
         sentences = [s for s in _SENTENCE_RE.split(text.strip()) if s]
         for sent_idx, sentence in enumerate(sentences):
-            if word_lower in unicodedata.normalize('NFC', sentence.lower()):
+            if _word_matches_flexible(word_norm, sentence):
                 matches.append((sentence, text_idx, sent_idx))
                 if len(matches) >= SEARCH_MAX_RESULTS:
                     break
@@ -812,7 +856,7 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
     logger.info('[/search] Слово "%s": найдено %d предложений (user_id=%s)', word, len(matches), user_id)
 
     if not matches:
-        if word_lower in _OSSETIAN_STOPWORDS:
+        if word_norm in _OSSETIAN_STOPWORDS:
             bot.reply_to(
                 message,
                 f'🔍 Слово *{_escape_markdown(word)}* является стоп-словом и встречается очень часто.\n'
