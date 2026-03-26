@@ -825,6 +825,8 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
                 f'🔍 Слово *{_escape_markdown(word)}* не найдено в вашем корпусе.',
                 parse_mode='Markdown',
             )
+        sent = bot.send_message(message.chat.id, '🔎 Введите слово для поиска:')
+        bot.register_next_step_handler(sent, _receive_search_word)
         return
 
     reply = f'🔍 *Результаты поиска: "{_escape_markdown(word)}"*\nНайдено предложений: {len(matches)}\n\n'
