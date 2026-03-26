@@ -506,9 +506,12 @@ def analyze(message: telebot.types.Message) -> None:
         reply += f'  {word}: {count}\n'
 
     user_id = message.from_user.id
+    db.save_corpus_text(user_id, text)
     db.insert_analysis((user_id, json.dumps(result['stats'])))
     logger.info('[/analyze] Результаты отправлены user_id=%s', user_id)
-    bot.reply_to(message, reply, parse_mode='Markdown')
+    sent = bot.reply_to(message, reply, parse_mode='Markdown')
+    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
 
 
 @bot.message_handler(commands=['frequency'])
