@@ -221,6 +221,45 @@ class Database:
             logger.error('[DB] get_named_analysis error: %s', e)
             return None
 
+    def search_named_analyses(self, user_id: int, query: str) -> list[dict]:
+        """Return all named corpora for *user_id* whose name contains *query* (case-insensitive).
+
+        Each element is a dict with keys ``name``, ``combined_text``,
+        ``analysis_result``, ``created_at``.  The most recent entry per name
+        is returned.
+        """
+        logger.info('[DB] Поиск произведений по запросу "%s" для user_id=%s', query, user_id)
+        sql = (
+            'SELECT name, combined_text, analysis_result, created_at '
+            'FROM named_analyses WHERE user_id = ? '
+            'ORDER BY id DESC'
+        )
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, (user_id,))
+            rows = cur.fetchall()
+            q = query.lower()
+            seen: set[str] = set()
+            results: list[dict] = []
+            for row in rows:
+                name = row[0]
+                if name in seen:
+                    continue
+                seen.add(name)
+                if q in name.lower():
+                    results.append({
+                        'name': name,
+                        'combined_text': row[1],
+                        'analysis_result': row[2],
+                        'created_at': row[3],
+                    })
+            logger.info('[DB] Найдено %d произведений по запросу "%s" для user_id=%s',
+                        len(results), query, user_id)
+            return results
+        except Error as e:
+            logger.error('[DB] search_named_analyses error: %s', e)
+            return []
+
     def save_named_analysis(self, user_id: int, name: str, combined_text: str,
                             analysis_result: str) -> int | None:
         """Persist a named corpus analysis. Returns the new row id."""
@@ -562,7 +601,7 @@ def start(message: telebot.types.Message) -> None:
         '  /wordcloud — облако слов корпуса\n'
         '  /stats — краткая статистика корпуса\n'
         '  /corpus — размер вашего корпуса\n'
-        '  /load <название> — получить текст именованного корпуса\n'
+        '  /load [название] — найти произведение по названию и получить текст целиком\n'
         '  /import\\_texts — импортировать .txt файлы из папки texts/\n'
         '  /collect — включить/выключить автосбор текстовых сообщений\n'
         '  /search <слово> — найти предложения с нужным словом в корпусе',
@@ -731,46 +770,70 @@ def _send_corpus_record(message: telebot.types.Message, name: str, record: dict)
 
 
 def _receive_load_name(message: telebot.types.Message) -> None:
-    """Next-step handler: receives the corpus name to load."""
-    name = (message.text or '').strip()
-    if not name or name.startswith('/'):
-        logger.info('[/load] Пустое или командное название от user_id=%s, загрузка отменена',
+    """Next-step handler: receives the work name to search and load."""
+    query = (message.text or '').strip()
+    if not query or query.startswith('/'):
+        logger.info('[/load] Пустой запрос от user_id=%s, загрузка отменена',
                     message.from_user.id)
         bot.reply_to(message, '❌ Название не указано. Загрузка отменена.')
         return
 
     user_id = message.from_user.id
-    logger.info('[/load] Поиск корпуса "%s" для user_id=%s (next-step)', name, user_id)
-    record = db.get_named_analysis(user_id, name)
-    if record is None:
-        bot.reply_to(message, f'❌ Корпус с названием *{_escape_markdown(name)}* не найден.', parse_mode='Markdown')
+    logger.info('[/load] Поиск произведения "%s" для user_id=%s (next-step)', query, user_id)
+    results = db.search_named_analyses(user_id, query)
+    if not results:
+        bot.reply_to(message,
+                     f'❌ Произведение по запросу *{_escape_markdown(query)}* не найдено.',
+                     parse_mode='Markdown')
         return
-    _send_corpus_record(message, name, record)
+    if len(results) == 1:
+        record = results[0]
+        _send_corpus_record(message, record['name'], record)
+        return
+    # Multiple matches — list them and ask the user to be more specific
+    names_list = '\n'.join(f'  • {_escape_markdown(r["name"])}' for r in results)
+    bot.reply_to(
+        message,
+        f'🔍 Найдено несколько произведений по запросу *{_escape_markdown(query)}*:\n\n'
+        f'{names_list}\n\n'
+        f'Уточните название и попробуйте снова.',
+        parse_mode='Markdown',
+    )
 
 
 @bot.message_handler(commands=['load'])
 def load_corpus(message: telebot.types.Message) -> None:
-    """/load <название> — вернуть сохранённый текст корпуса по названию."""
+    """/load [название] — найти произведение по названию и показать текст целиком."""
     logger.info('[/load] user_id=%s', message.from_user.id)
     parts = message.text.split(maxsplit=1)
-    name = parts[1].strip() if len(parts) > 1 else ''
-    if not name:
-        sent = bot.reply_to(message, '📝 Введите название корпуса для загрузки:')
+    query = parts[1].strip() if len(parts) > 1 else ''
+    if not query:
+        sent = bot.reply_to(message, '🔍 Введите название произведения для поиска:')
         bot.register_next_step_handler(sent, _receive_load_name)
         return
 
     user_id = message.from_user.id
-    logger.info('[/load] Поиск корпуса "%s" для user_id=%s', name, user_id)
-    record = db.get_named_analysis(user_id, name)
-    if record is None:
+    logger.info('[/load] Поиск произведения "%s" для user_id=%s', query, user_id)
+    results = db.search_named_analyses(user_id, query)
+    if not results:
         bot.reply_to(
             message,
-            f'❌ Корпус с названием *{_escape_markdown(name)}* не найден.',
+            f'❌ Произведение по запросу *{_escape_markdown(query)}* не найдено.',
             parse_mode='Markdown',
         )
         return
-
-    _send_corpus_record(message, name, record)
+    if len(results) == 1:
+        record = results[0]
+        _send_corpus_record(message, record['name'], record)
+        return
+    names_list = '\n'.join(f'  • {_escape_markdown(r["name"])}' for r in results)
+    bot.reply_to(
+        message,
+        f'🔍 Найдено несколько произведений по запросу *{_escape_markdown(query)}*:\n\n'
+        f'{names_list}\n\n'
+        f'Уточните название и попробуйте снова.',
+        parse_mode='Markdown',
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1122,7 +1185,7 @@ def button_corpus(message: telebot.types.Message) -> None:
 def button_load(message: telebot.types.Message) -> None:
     """Handle '📂 Загрузить' button – prompt for corpus name, then load it."""
     logger.info('[Button/📂] user_id=%s', message.from_user.id)
-    sent = bot.send_message(message.chat.id, '📝 Введите название корпуса для загрузки:')
+    sent = bot.send_message(message.chat.id, '🔍 Введите название произведения для поиска:')
     bot.register_next_step_handler(sent, _receive_load_name)
 
 
@@ -1252,7 +1315,7 @@ def _register_commands() -> None:
         telebot.types.BotCommand('wordcloud',    'Облако слов корпуса'),
         telebot.types.BotCommand('stats',        'Краткая статистика корпуса'),
         telebot.types.BotCommand('corpus',       'Статистика вашего корпуса'),
-        telebot.types.BotCommand('load',         'Получить текст корпуса по названию'),
+        telebot.types.BotCommand('load',         'Найти произведение по названию и получить текст'),
         telebot.types.BotCommand('import_texts', 'Импортировать .txt файлы из папки texts/'),
         telebot.types.BotCommand('collect',      'Включить/выключить автосбор текстовых сообщений'),
         telebot.types.BotCommand('search',       'Поиск слова в корпусе с примерами предложений'),
