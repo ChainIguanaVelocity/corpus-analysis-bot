@@ -175,6 +175,33 @@ class Database:
             logger.error('[DB] get_corpus_texts error: %s', e)
             return []
 
+    def get_corpus_texts_with_names(self, user_id: int) -> list[tuple[str, str | None]]:
+        """Return all raw corpus texts for *user_id* with their work names when available.
+
+        Each element is a tuple of ``(text, name_or_None)``, ordered oldest first.
+        The name is resolved from ``named_analyses`` by matching ``combined_text``
+        against the stored corpus text (the most recent matching entry is used).
+        """
+        logger.info('[DB] Запрос текстов корпуса с названиями для user_id=%s', user_id)
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                '''SELECT ct.text,
+                          (SELECT na.name FROM named_analyses na
+                           WHERE na.user_id = ct.user_id AND na.combined_text = ct.text
+                           ORDER BY na.id DESC LIMIT 1) AS name
+                   FROM corpus_texts ct
+                   WHERE ct.user_id = ?
+                   ORDER BY ct.id ASC''',
+                (user_id,),
+            )
+            rows = cur.fetchall()
+            logger.info('[DB] Найдено %d текстов с названиями для user_id=%s', len(rows), user_id)
+            return [(row[0], row[1]) for row in rows]
+        except Error as e:
+            logger.error('[DB] get_corpus_texts_with_names error: %s', e)
+            return []
+
     def get_corpus_stats(self, user_id: int) -> dict:
         """Return basic corpus stats for a user: total texts and total characters."""
         logger.info('[DB] Запрос статистики корпуса для user_id=%s', user_id)
@@ -883,8 +910,8 @@ def _word_matches_flexible(word_norm: str, sentence: str) -> bool:
 def _do_search(message: telebot.types.Message, word: str) -> None:
     """Core search logic shared by /search command and button_search."""
     user_id = message.from_user.id
-    texts = db.get_corpus_texts(user_id)
-    if not texts:
+    texts_with_names = db.get_corpus_texts_with_names(user_id)
+    if not texts_with_names:
         logger.info('[/search] Корпус пуст для user_id=%s', user_id)
         bot.reply_to(
             message,
@@ -894,13 +921,13 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
         return
 
     word_norm = _normalize_ossetian(word)
-    matches = []  # list of (sentence_text, text_idx, sent_idx)
+    matches = []  # list of (sentence_text, text_idx, sent_idx, name_or_None)
 
-    for text_idx, text in enumerate(texts):
+    for text_idx, (text, name) in enumerate(texts_with_names):
         sentences = [s for s in _SENTENCE_RE.split(text.strip()) if s]
         for sent_idx, sentence in enumerate(sentences):
             if _word_matches_flexible(word_norm, sentence):
-                matches.append((sentence, text_idx, sent_idx))
+                matches.append((sentence, text_idx, sent_idx, name))
                 if len(matches) >= SEARCH_MAX_RESULTS:
                     break
         if len(matches) >= SEARCH_MAX_RESULTS:
@@ -926,9 +953,10 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
 
     reply = f'🔍 *Результаты поиска: "{_escape_markdown(word)}"*\nНайдено предложений: {len(matches)}\n\n'
     markup = telebot.types.InlineKeyboardMarkup()
-    for i, (sentence, text_idx, sent_idx) in enumerate(matches, 1):
+    for i, (sentence, text_idx, sent_idx, name) in enumerate(matches, 1):
         display = sentence if len(sentence) <= SEARCH_SENTENCE_DISPLAY_LEN else sentence[:SEARCH_SENTENCE_DISPLAY_LEN - 3] + '...'
-        reply += f'*{i}.* _{_escape_markdown(display)}_\n\n'
+        work_label = f'📚 _{_escape_markdown(name)}_\n' if name else ''
+        reply += f'*{i}.* {work_label}{_escape_markdown(display)}\n\n'
         callback_data = f'srch:{text_idx}:{sent_idx}'
         markup.add(
             telebot.types.InlineKeyboardButton(
@@ -968,8 +996,8 @@ def search_word(message: telebot.types.Message) -> None:
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srch:'))
-def search_show_context(call: telebot.types.CallbackQuery) -> None:
-    """Show sentence context for a search result when the user taps 'View full text'."""
+def search_open_text_menu(call: telebot.types.CallbackQuery) -> None:
+    """Show work title and viewing options when the user taps 'Open text'."""
     logger.info('[callback/srch] user_id=%s, data=%s', call.from_user.id, call.data)
 
     parts = call.data.split(':')
@@ -985,13 +1013,61 @@ def search_show_context(call: telebot.types.CallbackQuery) -> None:
         return
 
     user_id = call.from_user.id
-    texts = db.get_corpus_texts(user_id)
+    texts_with_names = db.get_corpus_texts_with_names(user_id)
 
-    if text_idx >= len(texts):
+    if text_idx >= len(texts_with_names):
         bot.answer_callback_query(call.id, '❌ Текст не найден в корпусе.')
         return
 
-    text = texts[text_idx]
+    _text, name = texts_with_names[text_idx]
+    title_line = (
+        f'📚 *{_escape_markdown(name)}*\n\n'
+        if name
+        else f'📄 *Текст {text_idx + 1}*\n\n'
+    )
+    menu_text = title_line + 'Выберите режим просмотра:'
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.row(
+        telebot.types.InlineKeyboardButton(
+            '📖 Показать контекст',
+            callback_data=f'srch_ctx:{text_idx}:{sent_idx}',
+        ),
+        telebot.types.InlineKeyboardButton(
+            '📕 Полный текст',
+            callback_data=f'srch_full:{text_idx}',
+        ),
+    )
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, menu_text, parse_mode='Markdown', reply_markup=markup)
+    logger.info('[callback/srch] Меню просмотра отправлено (user_id=%s, текст=%d, предл.=%d)',
+                user_id, text_idx, sent_idx)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('srch_ctx:'))
+def search_show_context(call: telebot.types.CallbackQuery) -> None:
+    """Show sentence context for a search result."""
+    logger.info('[callback/srch_ctx] user_id=%s, data=%s', call.from_user.id, call.data)
+
+    parts = call.data.split(':')
+    if len(parts) != 3:
+        bot.answer_callback_query(call.id, '❌ Неверный формат данных.')
+        return
+
+    try:
+        text_idx = int(parts[1])
+        sent_idx = int(parts[2])
+    except ValueError:
+        bot.answer_callback_query(call.id, '❌ Неверный формат данных.')
+        return
+
+    user_id = call.from_user.id
+    texts_with_names = db.get_corpus_texts_with_names(user_id)
+
+    if text_idx >= len(texts_with_names):
+        bot.answer_callback_query(call.id, '❌ Текст не найден в корпусе.')
+        return
+
+    text, name = texts_with_names[text_idx]
     sentences = [s for s in _SENTENCE_RE.split(text.strip()) if s]
 
     if sent_idx >= len(sentences):
@@ -1011,8 +1087,14 @@ def search_show_context(call: telebot.types.CallbackQuery) -> None:
         context_lines.append(f'▶ {sent}' if i == relative_idx else sent)
     context_text = '\n'.join(context_lines)
 
+    title_line = (
+        f'📚 *{_escape_markdown(name)}*\n'
+        if name
+        else f'📄 *Текст {text_idx + 1}*\n'
+    )
     header = (
-        f'📄 *Контекст* (текст {text_idx + 1}, предложение {sent_idx + 1} из {len(sentences)})\n\n'
+        title_line
+        + f'📖 *Контекст* (предложение {sent_idx + 1} из {len(sentences)})\n\n'
     )
 
     bot.answer_callback_query(call.id)
@@ -1026,8 +1108,50 @@ def search_show_context(call: telebot.types.CallbackQuery) -> None:
         bot.send_message(call.message.chat.id, header, parse_mode='Markdown')
         for i in range(0, len(context_text), TELEGRAM_MAX_MESSAGE_LEN):
             bot.send_message(call.message.chat.id, context_text[i:i + TELEGRAM_MAX_MESSAGE_LEN])
-    logger.info('[callback/srch] Контекст отправлен (user_id=%s, текст=%d, предл.=%d)',
+    logger.info('[callback/srch_ctx] Контекст отправлен (user_id=%s, текст=%d, предл.=%d)',
                 user_id, text_idx, sent_idx)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('srch_full:'))
+def search_show_full_text(call: telebot.types.CallbackQuery) -> None:
+    """Show the full text of a work."""
+    logger.info('[callback/srch_full] user_id=%s, data=%s', call.from_user.id, call.data)
+
+    parts = call.data.split(':')
+    if len(parts) != 2:
+        bot.answer_callback_query(call.id, '❌ Неверный формат данных.')
+        return
+
+    try:
+        text_idx = int(parts[1])
+    except ValueError:
+        bot.answer_callback_query(call.id, '❌ Неверный формат данных.')
+        return
+
+    user_id = call.from_user.id
+    texts_with_names = db.get_corpus_texts_with_names(user_id)
+
+    if text_idx >= len(texts_with_names):
+        bot.answer_callback_query(call.id, '❌ Текст не найден в корпусе.')
+        return
+
+    text, name = texts_with_names[text_idx]
+    title_line = (
+        f'📚 *{_escape_markdown(name)}*\n'
+        if name
+        else f'📄 *Текст {text_idx + 1}*\n'
+    )
+    header = title_line + '📕 *Полный текст*\n\n'
+
+    bot.answer_callback_query(call.id)
+    if len(header) + len(text) <= TELEGRAM_MAX_MESSAGE_LEN:
+        bot.send_message(call.message.chat.id, header + text, parse_mode='Markdown')
+    else:
+        bot.send_message(call.message.chat.id, header, parse_mode='Markdown')
+        for i in range(0, len(text), TELEGRAM_MAX_MESSAGE_LEN):
+            bot.send_message(call.message.chat.id, text[i:i + TELEGRAM_MAX_MESSAGE_LEN])
+    logger.info('[callback/srch_full] Полный текст отправлен (user_id=%s, текст=%d)',
+                user_id, text_idx)
 
 
 @bot.message_handler(commands=['import_texts'])
