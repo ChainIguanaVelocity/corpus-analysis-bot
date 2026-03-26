@@ -1,14 +1,3 @@
-"""Бот анализа текстового корпуса — единый файл запуска.
-
-Usage:
-    python main.py
-
-Requires TELEGRAM_TOKEN to be set in the .env file or as an environment variable.
-"""
-
-# ---------------------------------------------------------------------------
-# Standard-library & third-party imports
-# ---------------------------------------------------------------------------
 import json
 import logging
 import os
@@ -768,7 +757,7 @@ def import_texts(message: telebot.types.Message) -> None:
     logger.info('[/import_texts] user_id=%s', message.from_user.id)
     user_id = message.from_user.id
 
-    texts_dir = 'texts'
+    texts_dir = r'C:\Users\User\Documents\GitHub\corpus-analysis-bot\texts'
     result = db.import_texts_from_directory(user_id, texts_dir, analyzer=analyzer)
 
     if 'error' in result:
