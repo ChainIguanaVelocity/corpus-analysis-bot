@@ -473,8 +473,19 @@ def _get_text(message: telebot.types.Message) -> str | None:
 
 @bot.message_handler(commands=['start'])
 def start(message: telebot.types.Message) -> None:
-    """Send a welcome message explaining available commands."""
+    """Send a welcome message with a command menu keyboard."""
     logger.info('[/start] user_id=%s (@%s)', message.from_user.id, message.from_user.username)
+
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        telebot.types.KeyboardButton('/analyze'),
+        telebot.types.KeyboardButton('/frequency'),
+        telebot.types.KeyboardButton('/wordcloud'),
+        telebot.types.KeyboardButton('/stats'),
+        telebot.types.KeyboardButton('/corpus'),
+        telebot.types.KeyboardButton('/load'),
+    )
+
     bot.reply_to(
         message,
         '👋 Добро пожаловать в *Бот анализа корпуса*!\n\n'
@@ -492,6 +503,7 @@ def start(message: telebot.types.Message) -> None:
         'все тексты вместе и сохранит каждое как отдельный текст в вашем корпусе.\n\n'
         'Введите текст после команды.',
         parse_mode='Markdown',
+        reply_markup=markup,
     )
 
 
