@@ -227,8 +227,14 @@ class Database:
             logger.error('[DB] save_named_analysis error: %s', e)
             return None
 
-    def import_texts_from_directory(self, user_id: int, texts_dir: str = 'texts') -> dict:
+    def import_texts_from_directory(self, user_id: int, texts_dir: str = 'texts',
+                                    analyzer=None) -> dict:
         """Import all .txt files from *texts_dir* into ``corpus_texts`` for *user_id*.
+
+        Each file is saved as a raw corpus text.  When *analyzer* is provided
+        (a :class:`TextAnalyzer` instance), the file is also saved as a named
+        corpus entry in ``named_analyses`` using the filename stem (filename
+        without the ``.txt`` extension) as the corpus name.
 
         Returns a dict with keys:
           ``imported`` — number of files successfully loaded,
@@ -253,6 +259,15 @@ class Database:
                 with open(filepath, 'r', encoding='utf-8') as fh:
                     text = fh.read()
                 self.save_corpus_text(user_id, text)
+                # Save the filename stem as a named corpus entry when an analyzer
+                # is available, so texts can be retrieved later by /load <name>.
+                if analyzer is not None:
+                    name = os.path.splitext(filename)[0]
+                    analysis_result = analyzer.analyze(text)
+                    self.save_named_analysis(
+                        user_id, name, text, json.dumps(analysis_result)
+                    )
+                    logger.info('[DB] Файл "%s" сохранён как корпус "%s"', filename, name)
                 imported += 1
                 logger.info('[DB] Файл "%s" успешно импортирован', filename)
             except (OSError, UnicodeDecodeError) as e:
@@ -754,7 +769,7 @@ def import_texts(message: telebot.types.Message) -> None:
     user_id = message.from_user.id
 
     texts_dir = 'texts'
-    result = db.import_texts_from_directory(user_id, texts_dir)
+    result = db.import_texts_from_directory(user_id, texts_dir, analyzer=analyzer)
 
     if 'error' in result:
         bot.reply_to(
@@ -775,9 +790,9 @@ def import_texts(message: telebot.types.Message) -> None:
         )
         return
 
-    reply = f'✅ Загружено {imported} текстов'
+    reply = f'✅ Загружено {imported} {_ru_plural(imported, "текст", "текста", "текстов")}'
     if errors:
-        reply += f', ошибок: {errors}'
+        reply += f', {errors} {_ru_plural(errors, "ошибка", "ошибки", "ошибок")}'
     logger.info('[/import_texts] Импорт завершён для user_id=%s: загружено=%d, ошибок=%d',
                 user_id, imported, errors)
     bot.reply_to(message, reply)
