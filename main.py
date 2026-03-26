@@ -1097,7 +1097,7 @@ def button_stats(message: telebot.types.Message) -> None:
         f'  • Средняя длина слова: {s["avg_word_length"]:.2f}\n'
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
-    sent = bot.reply_to(message, reply, parse_mode='Markdown')
+    bot.reply_to(message, reply, parse_mode='Markdown')
 
 
 @bot.message_handler(func=lambda m: m.text == '📚 Корпус')
