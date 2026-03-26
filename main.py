@@ -73,6 +73,14 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS corpus_texts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
 
     def close_connection(self):
         """Close the database connection."""
@@ -98,6 +106,32 @@ class Database:
         except Error as e:
             print(f'insert_analysis error: {e}')
             return None
+
+    def save_corpus_text(self, user_id: int, text: str) -> int | None:
+        """Save a raw corpus text submitted by the user. Returns the new row id."""
+        sql = 'INSERT INTO corpus_texts(user_id, text) VALUES(?, ?)'
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, (user_id, text))
+            self.conn.commit()
+            return cur.lastrowid
+        except Error as e:
+            print(f'save_corpus_text error: {e}')
+            return None
+
+    def get_corpus_stats(self, user_id: int) -> dict:
+        """Return basic corpus stats for a user: total texts and total characters."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT COUNT(*), COALESCE(SUM(LENGTH(text)), 0) FROM corpus_texts WHERE user_id = ?',
+                (user_id,),
+            )
+            count, total_chars = cur.fetchone()
+            return {'count': count, 'total_chars': total_chars}
+        except Error as e:
+            print(f'get_corpus_stats error: {e}')
+            return {'count': 0, 'total_chars': 0}
 
 # ---------------------------------------------------------------------------
 # Text analyser  (previously text_analyzer.py)
@@ -238,7 +272,10 @@ def start(message: telebot.types.Message) -> None:
         '  /analyze <текст> — статистика + самые частые слова\n'
         '  /frequency <текст> — диаграмма частотности слов\n'
         '  /wordcloud <текст> — облако слов\n'
-        '  /stats <текст> — краткая статистика текста\n\n'
+        '  /stats <текст> — краткая статистика текста\n'
+        '  /corpus — статистика вашего корпуса\n\n'
+        '📝 Вы также можете просто отправить текстовое сообщение, '
+        'чтобы добавить его в ваш корпус.\n\n'
         'Введите текст после команды.',
         parse_mode='Markdown',
     )
@@ -331,6 +368,46 @@ def stats(message: telebot.types.Message) -> None:
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
     bot.reply_to(message, reply, parse_mode='Markdown')
+
+
+@bot.message_handler(commands=['corpus'])
+def corpus(message: telebot.types.Message) -> None:
+    """/corpus — show corpus statistics for the current user."""
+    user_id = message.from_user.id
+    corpus_stats = db.get_corpus_stats(user_id)
+    reply = (
+        f'📚 *Ваш корпус*\n\n'
+        f'  • Текстов сохранено: {corpus_stats["count"]}\n'
+        f'  • Всего символов: {corpus_stats["total_chars"]}\n\n'
+        f'Отправьте любое текстовое сообщение, чтобы добавить его в корпус.'
+    )
+    bot.reply_to(message, reply, parse_mode='Markdown')
+
+
+@bot.message_handler(content_types=['text'])
+def add_to_corpus(message: telebot.types.Message) -> None:
+    """Accept any plain-text message and save it to the user's corpus."""
+    # Ignore messages that start with '/' (commands not matched by other handlers).
+    if message.text.startswith('/'):
+        return
+    text = message.text.strip()
+    if not text:
+        return
+    if len(text) > MAX_TEXT_LENGTH:
+        bot.reply_to(
+            message,
+            f'Текст слишком длинный. Максимальная длина: {MAX_TEXT_LENGTH} символов.',
+        )
+        return
+
+    user_id = message.from_user.id
+    db.save_corpus_text(user_id, text)
+    corpus_stats = db.get_corpus_stats(user_id)
+    bot.reply_to(
+        message,
+        f'✅ Текст добавлен в корпус.\n'
+        f'Всего текстов в вашем корпусе: {corpus_stats["count"]}.',
+    )
 
 # ---------------------------------------------------------------------------
 # Entry point
