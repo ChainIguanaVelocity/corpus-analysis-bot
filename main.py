@@ -38,10 +38,30 @@ COLLECT_WINDOW: int = int(os.getenv('COLLECT_WINDOW', '3'))  # seconds
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
+class ColoredFormatter(logging.Formatter):
+    """Logging formatter that adds ANSI color codes based on log level."""
+
+    _COLORS = {
+        logging.DEBUG:    '\033[36m',   # Cyan
+        logging.INFO:     '\033[32m',   # Green
+        logging.WARNING:  '\033[33m',   # Yellow
+        logging.ERROR:    '\033[31m',   # Red
+        logging.CRITICAL: '\033[35m',   # Magenta
+    }
+    _RESET = '\033[0m'
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = self._COLORS.get(record.levelno, '')
+        message = super().format(record)
+        return f'{color}{message}{self._RESET}'
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(
+    ColoredFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 )
+logging.root.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+logging.root.addHandler(_handler)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -362,7 +382,7 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     """Fire after COLLECT_WINDOW seconds of inactivity for a user.
 
     Combines all buffered texts, runs full analysis, sends the results, and
-    then asks the user to name the corpus via a next-step handler.
+    saves each message as an individual text in the user's corpus.
     """
     logger.info('[Buffer] Таймер сработал для user_id=%s, chat_id=%s', user_id, chat_id)
     with _buffer_lock:
@@ -404,10 +424,8 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
 
-    sent = bot.send_message(chat_id, reply, parse_mode='Markdown')
-    bot.send_message(chat_id, '📝 Введите название для этого корпуса (или /skip, чтобы пропустить):')
-    logger.info('[Buffer] Результаты отправлены, ожидаем название корпуса (user_id=%s)', user_id)
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, combined_text, result)
+    bot.send_message(chat_id, reply, parse_mode='Markdown')
+    logger.info('[Buffer] Результаты анализа отправлены (user_id=%s)', user_id)
 
 
 def _receive_corpus_name(message: telebot.types.Message, user_id: int,
@@ -455,8 +473,19 @@ def _get_text(message: telebot.types.Message) -> str | None:
 
 @bot.message_handler(commands=['start'])
 def start(message: telebot.types.Message) -> None:
-    """Send a welcome message explaining available commands."""
+    """Send a welcome message with a command menu keyboard."""
     logger.info('[/start] user_id=%s (@%s)', message.from_user.id, message.from_user.username)
+
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        telebot.types.KeyboardButton('/analyze'),
+        telebot.types.KeyboardButton('/frequency'),
+        telebot.types.KeyboardButton('/wordcloud'),
+        telebot.types.KeyboardButton('/stats'),
+        telebot.types.KeyboardButton('/corpus'),
+        telebot.types.KeyboardButton('/load'),
+    )
+
     bot.reply_to(
         message,
         '👋 Добро пожаловать в *Бот анализа корпуса*!\n\n'
@@ -471,9 +500,10 @@ def start(message: telebot.types.Message) -> None:
         '📝 Вы также можете просто отправить одно или несколько сообщений подряд.\n'
         f'Через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
         'после последнего сообщения бот проанализирует '
-        'все тексты вместе и попросит дать название корпусу.\n\n'
+        'все тексты вместе и сохранит каждое как отдельный текст в вашем корпусе.\n\n'
         'Введите текст после команды.',
         parse_mode='Markdown',
+        reply_markup=markup,
     )
 
 
@@ -523,7 +553,8 @@ def frequency(message: telebot.types.Message) -> None:
         return
 
     logger.info('[/frequency] Анализ частотности (%d симв.) для user_id=%s', len(text), message.from_user.id)
-    freq_dict = analyzer.analyze(text)['frequency']
+    result = analyzer.analyze(text)
+    freq_dict = result['frequency']
     if not freq_dict:
         logger.info('[/frequency] Нет слов для анализа (user_id=%s)', message.from_user.id)
         bot.reply_to(message, 'Нет слов для частотного анализа.')
@@ -534,7 +565,14 @@ def frequency(message: telebot.types.Message) -> None:
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
     logger.info('[/frequency] Отправка топ-%d слов для user_id=%s', len(top), message.from_user.id)
-    bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
+
+    user_id = message.from_user.id
+    db.save_corpus_text(user_id, text)
+    db.insert_analysis((user_id, json.dumps(result['stats'])))
+    sent = bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
+    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    logger.info('[/frequency] Ожидаем название корпуса (user_id=%s)', user_id)
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
 
 
 @bot.message_handler(commands=['wordcloud'])
@@ -546,7 +584,8 @@ def wordcloud(message: telebot.types.Message) -> None:
         return
 
     logger.info('[/wordcloud] Генерация облака слов (%d симв.) для user_id=%s', len(text), message.from_user.id)
-    freq_dict = analyzer.analyze(text)['frequency']
+    result = analyzer.analyze(text)
+    freq_dict = result['frequency']
     if not freq_dict:
         logger.info('[/wordcloud] Нет слов для облака (user_id=%s)', message.from_user.id)
         bot.reply_to(message, 'Нет слов для создания облака слов.')
@@ -556,10 +595,17 @@ def wordcloud(message: telebot.types.Message) -> None:
     try:
         logger.info('[/wordcloud] Отправка изображения %s для user_id=%s', image_path, message.from_user.id)
         with open(image_path, 'rb') as img:
-            bot.send_photo(message.chat.id, img, caption='Облако слов')
+            sent = bot.send_photo(message.chat.id, img, caption='Облако слов')
     finally:
         os.unlink(image_path)
         logger.info('[/wordcloud] Временный файл удалён: %s', image_path)
+
+    user_id = message.from_user.id
+    db.save_corpus_text(user_id, text)
+    db.insert_analysis((user_id, json.dumps(result['stats'])))
+    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    logger.info('[/wordcloud] Ожидаем название корпуса (user_id=%s)', user_id)
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
 
 
 @bot.message_handler(commands=['stats'])
@@ -580,8 +626,13 @@ def stats(message: telebot.types.Message) -> None:
         f'  • Средняя длина слова: {s["avg_word_length"]:.2f}\n'
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
-    logger.info('[/stats] Статистика отправлена user_id=%s', message.from_user.id)
-    bot.reply_to(message, reply, parse_mode='Markdown')
+    user_id = message.from_user.id
+    db.save_corpus_text(user_id, text)
+    logger.info('[/stats] Статистика отправлена user_id=%s', user_id)
+    sent = bot.reply_to(message, reply, parse_mode='Markdown')
+    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    logger.info('[/stats] Ожидаем название корпуса (user_id=%s)', user_id)
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, {'stats': s})
 
 
 @bot.message_handler(commands=['corpus'])
@@ -600,6 +651,40 @@ def corpus(message: telebot.types.Message) -> None:
     bot.reply_to(message, reply, parse_mode='Markdown')
 
 
+def _send_corpus_record(message: telebot.types.Message, name: str, record: dict) -> None:
+    """Send the text of a named corpus record to the user."""
+    text = record['combined_text']
+    created_at = record['created_at']
+    header = f'📄 *Корпус: {name}*\n_Сохранён: {created_at}_\n\n'
+    full_message = header + text
+    if len(full_message) <= 4096:
+        bot.reply_to(message, full_message, parse_mode='Markdown')
+    else:
+        bot.reply_to(message, header, parse_mode='Markdown')
+        for i in range(0, len(text), 4096):
+            bot.send_message(message.chat.id, text[i:i + 4096])
+    logger.info('[/load] Текст корпуса "%s" отправлен user_id=%s (%d симв.)',
+                name, message.from_user.id, len(text))
+
+
+def _receive_load_name(message: telebot.types.Message) -> None:
+    """Next-step handler: receives the corpus name to load."""
+    name = (message.text or '').strip()
+    if not name or name.startswith('/'):
+        logger.info('[/load] Пустое или командное название от user_id=%s, загрузка отменена',
+                    message.from_user.id)
+        bot.reply_to(message, '❌ Название не указано. Загрузка отменена.')
+        return
+
+    user_id = message.from_user.id
+    logger.info('[/load] Поиск корпуса "%s" для user_id=%s (next-step)', name, user_id)
+    record = db.get_named_analysis(user_id, name)
+    if record is None:
+        bot.reply_to(message, f'❌ Корпус с названием *{name}* не найден.', parse_mode='Markdown')
+        return
+    _send_corpus_record(message, name, record)
+
+
 @bot.message_handler(commands=['load'])
 def load_corpus(message: telebot.types.Message) -> None:
     """/load <название> — вернуть сохранённый текст корпуса по названию."""
@@ -607,10 +692,8 @@ def load_corpus(message: telebot.types.Message) -> None:
     parts = message.text.split(maxsplit=1)
     name = parts[1].strip() if len(parts) > 1 else ''
     if not name:
-        bot.reply_to(
-            message,
-            'Укажите название корпуса после команды. Пример:\n/load мой корпус',
-        )
+        sent = bot.reply_to(message, '📝 Введите название корпуса для загрузки:')
+        bot.register_next_step_handler(sent, _receive_load_name)
         return
 
     user_id = message.from_user.id
@@ -624,25 +707,14 @@ def load_corpus(message: telebot.types.Message) -> None:
         )
         return
 
-    text = record['combined_text']
-    created_at = record['created_at']
-    header = f'📄 *Корпус: {name}*\n_Сохранён: {created_at}_\n\n'
-    # Telegram limit is 4096 characters per message; send the rest in a second message.
-    full_message = header + text
-    if len(full_message) <= 4096:
-        bot.reply_to(message, full_message, parse_mode='Markdown')
-    else:
-        bot.reply_to(message, header, parse_mode='Markdown')
-        # Split the text into chunks of at most 4096 characters.
-        for i in range(0, len(text), 4096):
-            bot.send_message(message.chat.id, text[i:i + 4096])
-    logger.info('[/load] Текст корпуса "%s" отправлен user_id=%s (%d симв.)', name, user_id, len(text))
+    _send_corpus_record(message, name, record)
 
 
 @bot.message_handler(content_types=['text'])
 def add_to_corpus(message: telebot.types.Message) -> None:
     """Buffer plain-text messages; after COLLECT_WINDOW seconds of inactivity,
-    analyse them all together and ask the user to name the resulting corpus.
+    analyse them all together and save each one as an individual text in the
+    user's corpus (corpus_texts). Plain messages are texts, not named corpora.
     """
     # Ignore messages that start with '/' (commands not matched by other handlers).
     if message.text.startswith('/'):
