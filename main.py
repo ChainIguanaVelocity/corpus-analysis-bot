@@ -536,6 +536,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('📂 Загрузить'),
         telebot.types.KeyboardButton('📥 Импорт'),
         telebot.types.KeyboardButton('🔄 Автосбор'),
+        telebot.types.KeyboardButton('🔎 Поиск'),
     )
 
     bot.reply_to(
@@ -781,17 +782,8 @@ def load_corpus(message: telebot.types.Message) -> None:
     _send_corpus_record(message, name, record)
 
 
-@bot.message_handler(commands=['search'])
-def search_word(message: telebot.types.Message) -> None:
-    """/search <word> — find sentences containing the word in the user's corpus."""
-    logger.info('[/search] user_id=%s', message.from_user.id)
-    parts = message.text.split(maxsplit=1)
-    word = parts[1].strip() if len(parts) > 1 else ''
-
-    if not word:
-        bot.reply_to(message, '🔍 Укажите слово для поиска. Пример: /search слово')
-        return
-
+def _do_search(message: telebot.types.Message, word: str) -> None:
+    """Core search logic shared by /search command and button_search."""
     user_id = message.from_user.id
     texts = db.get_corpus_texts(user_id)
     if not texts:
@@ -848,6 +840,33 @@ def search_word(message: telebot.types.Message) -> None:
         )
 
     bot.reply_to(message, reply, parse_mode='Markdown', reply_markup=markup)
+
+
+def _receive_search_word(message: telebot.types.Message) -> None:
+    """Next-step handler: receives the search word entered by the user."""
+    word = (message.text or '').strip()
+    if not word or word.startswith('/'):
+        logger.info('[Button/🔎] Пустой или командный ввод от user_id=%s, поиск отменён',
+                    message.from_user.id)
+        bot.reply_to(message, '❌ Слово не введено. Поиск отменён.')
+        return
+
+    logger.info('[Button/🔎] Поиск слова "%s" для user_id=%s (next-step)', word, message.from_user.id)
+    _do_search(message, word)
+
+
+@bot.message_handler(commands=['search'])
+def search_word(message: telebot.types.Message) -> None:
+    """/search <word> — find sentences containing the word in the user's corpus."""
+    logger.info('[/search] user_id=%s', message.from_user.id)
+    parts = message.text.split(maxsplit=1)
+    word = parts[1].strip() if len(parts) > 1 else ''
+
+    if not word:
+        bot.reply_to(message, '🔍 Укажите слово для поиска. Пример: /search слово')
+        return
+
+    _do_search(message, word)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srch:'))
@@ -1085,6 +1104,14 @@ def button_load(message: telebot.types.Message) -> None:
     logger.info('[Button/📂] user_id=%s', message.from_user.id)
     sent = bot.send_message(message.chat.id, '📝 Введите название корпуса для загрузки:')
     bot.register_next_step_handler(sent, _receive_load_name)
+
+
+@bot.message_handler(func=lambda m: m.text == '🔎 Поиск')
+def button_search(message: telebot.types.Message) -> None:
+    """Handle '🔎 Поиск' button – prompt for a search word, then run search."""
+    logger.info('[Button/🔎] user_id=%s', message.from_user.id)
+    sent = bot.send_message(message.chat.id, '🔎 Введите слово для поиска:')
+    bot.register_next_step_handler(sent, _receive_search_word)
 
 
 @bot.message_handler(func=lambda m: m.text == '📥 Импорт')
