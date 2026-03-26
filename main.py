@@ -478,12 +478,12 @@ def start(message: telebot.types.Message) -> None:
 
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        telebot.types.KeyboardButton('/analyze'),
-        telebot.types.KeyboardButton('/frequency'),
-        telebot.types.KeyboardButton('/wordcloud'),
-        telebot.types.KeyboardButton('/stats'),
-        telebot.types.KeyboardButton('/corpus'),
-        telebot.types.KeyboardButton('/load'),
+        telebot.types.KeyboardButton('Статистика и частые слова текста'),
+        telebot.types.KeyboardButton('Частотность слов в тексте'),
+        telebot.types.KeyboardButton('Облако слов для текста'),
+        telebot.types.KeyboardButton('Краткая статистика текста'),
+        telebot.types.KeyboardButton('Статистика вашего корпуса'),
+        telebot.types.KeyboardButton('Получить текст корпуса по названию'),
     )
 
     bot.reply_to(
