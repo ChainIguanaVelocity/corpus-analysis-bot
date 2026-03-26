@@ -678,6 +678,21 @@ def add_to_corpus(message: telebot.types.Message) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _register_commands() -> None:
+    """Register bot commands so they appear as menu buttons in Telegram."""
+    commands = [
+        telebot.types.BotCommand('start',     'Начать работу с ботом'),
+        telebot.types.BotCommand('analyze',   'Статистика и частые слова текста'),
+        telebot.types.BotCommand('frequency', 'Частотность слов в тексте'),
+        telebot.types.BotCommand('wordcloud', 'Облако слов для текста'),
+        telebot.types.BotCommand('stats',     'Краткая статистика текста'),
+        telebot.types.BotCommand('corpus',    'Статистика вашего корпуса'),
+        telebot.types.BotCommand('load',      'Получить текст корпуса по названию'),
+    ]
+    bot.set_my_commands(commands)
+    logger.info('Команды меню зарегистрированы (%d команд)', len(commands))
+
+
 def main() -> None:
     if not TELEGRAM_TOKEN:
         raise RuntimeError('TELEGRAM_TOKEN is not set. Please configure it in your .env file.')
@@ -685,6 +700,7 @@ def main() -> None:
     logger.info('Bot is starting...')
     logger.info('Настройки: DB=%s, MAX_TEXT=%d, TOP_WORDS=%d, COLLECT_WINDOW=%ds',
                 DB_FILE, MAX_TEXT_LENGTH, TOP_WORDS, COLLECT_WINDOW)
+    _register_commands()
     try:
         logger.info('Запуск infinity_polling...')
         bot.infinity_polling()
