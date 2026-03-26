@@ -1,3 +1,4 @@
+import itertools
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
 MAX_TEXT_LENGTH: int = int(os.getenv('MAX_TEXT_LENGTH', '10000'))
 TOP_WORDS: int = int(os.getenv('TOP_WORDS', '20'))
 COLLECT_WINDOW: int = int(os.getenv('COLLECT_WINDOW', '3'))  # seconds
+TEXTS_DIR: str = os.getenv('TEXTS_DIR', 'texts')
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -517,13 +519,13 @@ def start(message: telebot.types.Message) -> None:
 
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        telebot.types.KeyboardButton('Статистика и частые слова текста'),
-        telebot.types.KeyboardButton('Частотность слов в тексте'),
-        telebot.types.KeyboardButton('Облако слов для текста'),
-        telebot.types.KeyboardButton('Краткая статистика текста'),
-        telebot.types.KeyboardButton('Статистика вашего корпуса'),
-        telebot.types.KeyboardButton('Получить текст корпуса по названию'),
-        telebot.types.KeyboardButton('Импортировать тексты из папки texts/'),
+        telebot.types.KeyboardButton('📊 Анализ'),
+        telebot.types.KeyboardButton('📈 Частота'),
+        telebot.types.KeyboardButton('☁️ Облако'),
+        telebot.types.KeyboardButton('📋 Статистика'),
+        telebot.types.KeyboardButton('📚 Корпус'),
+        telebot.types.KeyboardButton('📂 Загрузить'),
+        telebot.types.KeyboardButton('📥 Импорт'),
     )
 
     bot.reply_to(
@@ -757,7 +759,7 @@ def import_texts(message: telebot.types.Message) -> None:
     logger.info('[/import_texts] user_id=%s', message.from_user.id)
     user_id = message.from_user.id
 
-    texts_dir = r'C:\Users\User\Documents\GitHub\corpus-analysis-bot\texts'
+    texts_dir = TEXTS_DIR
     result = db.import_texts_from_directory(user_id, texts_dir, analyzer=analyzer)
 
     if 'error' in result:
@@ -784,6 +786,214 @@ def import_texts(message: telebot.types.Message) -> None:
         reply += f', {errors} {_ru_plural(errors, "ошибка", "ошибки", "ошибок")}'
     logger.info('[/import_texts] Импорт завершён для user_id=%s: загружено=%d, ошибок=%d',
                 user_id, imported, errors)
+    bot.reply_to(message, reply)
+
+
+# ---------------------------------------------------------------------------
+# Keyboard button handlers
+# ---------------------------------------------------------------------------
+
+@bot.message_handler(func=lambda m: m.text == '📊 Анализ')
+def button_analyze(message: telebot.types.Message) -> None:
+    """Handle '📊 Анализ' button – prompt for text, then run full analysis."""
+    logger.info('[Button/📊] user_id=%s', message.from_user.id)
+    msg = bot.send_message(message.chat.id, 'Введите текст для анализа:')
+    bot.register_next_step_handler(msg, _handle_analyze_input)
+
+
+def _handle_analyze_input(message: telebot.types.Message) -> None:
+    """Next-step: run full analysis on text received via the Analyze button."""
+    text = (message.text or '').strip()
+    if not text:
+        bot.send_message(message.chat.id, '❌ Пустое сообщение. Попробуйте снова.')
+        return
+    if len(text) > MAX_TEXT_LENGTH:
+        bot.send_message(message.chat.id,
+                         f'❌ Текст слишком длинный. Максимум: {MAX_TEXT_LENGTH} символов.')
+        return
+    user_id = message.from_user.id
+    logger.info('[Button/📊] Анализ %d симв. для user_id=%s', len(text), user_id)
+    result = analyzer.analyze(text)
+    stats_data = result['stats']
+    freq = dict(itertools.islice(result['frequency'].items(), TOP_WORDS))
+    reply = (
+        f'📊 *Результаты анализа*\n\n'
+        f'*Статистика:*\n'
+        f'  • Слов (всего): {stats_data["total_words"]}\n'
+        f'  • Уникальных слов: {stats_data["unique_words"]}\n'
+        f'  • Предложений: {stats_data["sentences"]}\n'
+        f'  • Средняя длина слова: {stats_data["avg_word_length"]:.2f}\n'
+        f'  • Лексическое разнообразие: {stats_data["lexical_diversity"]:.2%}\n'
+        f'  • Токенов: {result["tokens_count"]}\n'
+        f'  • Уникальных лемм: {result["lemmas_count"]}\n\n'
+        f'*Топ {TOP_WORDS} слов:*\n'
+    )
+    for word, count in freq.items():
+        reply += f'  {word}: {count}\n'
+    db.save_corpus_text(user_id, text)
+    db.insert_analysis((user_id, json.dumps(result['stats'])))
+    sent = bot.reply_to(message, reply, parse_mode='Markdown')
+    bot.send_message(message.chat.id,
+                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
+
+
+@bot.message_handler(func=lambda m: m.text == '📈 Частота')
+def button_frequency(message: telebot.types.Message) -> None:
+    """Handle '📈 Частота' button – prompt for text, then show word frequencies."""
+    logger.info('[Button/📈] user_id=%s', message.from_user.id)
+    msg = bot.send_message(message.chat.id, 'Введите текст для анализа частотности:')
+    bot.register_next_step_handler(msg, _handle_frequency_input)
+
+
+def _handle_frequency_input(message: telebot.types.Message) -> None:
+    """Next-step: run frequency analysis on text received via the Frequency button."""
+    text = (message.text or '').strip()
+    if not text:
+        bot.send_message(message.chat.id, '❌ Пустое сообщение. Попробуйте снова.')
+        return
+    if len(text) > MAX_TEXT_LENGTH:
+        bot.send_message(message.chat.id,
+                         f'❌ Текст слишком длинный. Максимум: {MAX_TEXT_LENGTH} символов.')
+        return
+    user_id = message.from_user.id
+    logger.info('[Button/📈] Частота %d симв. для user_id=%s', len(text), user_id)
+    result = analyzer.analyze(text)
+    freq_dict = result['frequency']
+    if not freq_dict:
+        bot.reply_to(message, 'Нет слов для частотного анализа.')
+        return
+    top = sorted(freq_dict.items(), key=lambda x: x[1], reverse=True)[:20]
+    lines = ['📊 *Частота слов:*\n\n']
+    for word, count in top:
+        lines.append(f'  {word}: {count}\n')
+    db.save_corpus_text(user_id, text)
+    db.insert_analysis((user_id, json.dumps(result['stats'])))
+    sent = bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
+    bot.send_message(message.chat.id,
+                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
+
+
+@bot.message_handler(func=lambda m: m.text == '☁️ Облако')
+def button_wordcloud(message: telebot.types.Message) -> None:
+    """Handle '☁️ Облако' button – prompt for text, then generate word cloud."""
+    logger.info('[Button/☁️] user_id=%s', message.from_user.id)
+    msg = bot.send_message(message.chat.id, 'Введите текст для создания облака слов:')
+    bot.register_next_step_handler(msg, _handle_wordcloud_input)
+
+
+def _handle_wordcloud_input(message: telebot.types.Message) -> None:
+    """Next-step: generate word cloud from text received via the Word Cloud button."""
+    text = (message.text or '').strip()
+    if not text:
+        bot.send_message(message.chat.id, '❌ Пустое сообщение. Попробуйте снова.')
+        return
+    if len(text) > MAX_TEXT_LENGTH:
+        bot.send_message(message.chat.id,
+                         f'❌ Текст слишком длинный. Максимум: {MAX_TEXT_LENGTH} символов.')
+        return
+    user_id = message.from_user.id
+    logger.info('[Button/☁️] Облако %d симв. для user_id=%s', len(text), user_id)
+    result = analyzer.analyze(text)
+    freq_dict = result['frequency']
+    if not freq_dict:
+        bot.reply_to(message, 'Нет слов для создания облака слов.')
+        return
+    image_path = vis.plot_word_cloud(freq_dict, title='Облако слов')
+    try:
+        with open(image_path, 'rb') as img:
+            sent = bot.send_photo(message.chat.id, img, caption='Облако слов')
+    finally:
+        os.unlink(image_path)
+    db.save_corpus_text(user_id, text)
+    db.insert_analysis((user_id, json.dumps(result['stats'])))
+    bot.send_message(message.chat.id,
+                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
+
+
+@bot.message_handler(func=lambda m: m.text == '📋 Статистика')
+def button_stats(message: telebot.types.Message) -> None:
+    """Handle '📋 Статистика' button – prompt for text, then show brief stats."""
+    logger.info('[Button/📋] user_id=%s', message.from_user.id)
+    msg = bot.send_message(message.chat.id, 'Введите текст для получения статистики:')
+    bot.register_next_step_handler(msg, _handle_stats_input)
+
+
+def _handle_stats_input(message: telebot.types.Message) -> None:
+    """Next-step: compute brief statistics from text received via the Stats button."""
+    text = (message.text or '').strip()
+    if not text:
+        bot.send_message(message.chat.id, '❌ Пустое сообщение. Попробуйте снова.')
+        return
+    if len(text) > MAX_TEXT_LENGTH:
+        bot.send_message(message.chat.id,
+                         f'❌ Текст слишком длинный. Максимум: {MAX_TEXT_LENGTH} символов.')
+        return
+    user_id = message.from_user.id
+    logger.info('[Button/📋] Статистика %d симв. для user_id=%s', len(text), user_id)
+    s = analyzer.get_text_stats(text)
+    reply = (
+        f'📈 *Статистика текста*\n\n'
+        f'  • Слов (всего): {s["total_words"]}\n'
+        f'  • Уникальных слов: {s["unique_words"]}\n'
+        f'  • Предложений: {s["sentences"]}\n'
+        f'  • Средняя длина слова: {s["avg_word_length"]:.2f}\n'
+        f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
+    )
+    db.save_corpus_text(user_id, text)
+    sent = bot.reply_to(message, reply, parse_mode='Markdown')
+    bot.send_message(message.chat.id,
+                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, {'stats': s})
+
+
+@bot.message_handler(func=lambda m: m.text == '📚 Корпус')
+def button_corpus(message: telebot.types.Message) -> None:
+    """Handle '📚 Корпус' button – show corpus statistics for the current user."""
+    logger.info('[Button/📚] user_id=%s', message.from_user.id)
+    user_id = message.from_user.id
+    corpus_stats = db.get_corpus_stats(user_id)
+    reply = (
+        f'📚 *Ваш корпус*\n\n'
+        f'  • Текстов сохранено: {corpus_stats["count"]}\n'
+        f'  • Всего символов: {corpus_stats["total_chars"]}\n\n'
+        f'Отправьте любое текстовое сообщение, чтобы добавить его в корпус.'
+    )
+    bot.reply_to(message, reply, parse_mode='Markdown')
+
+
+@bot.message_handler(func=lambda m: m.text == '📂 Загрузить')
+def button_load(message: telebot.types.Message) -> None:
+    """Handle '📂 Загрузить' button – prompt for corpus name, then load it."""
+    logger.info('[Button/📂] user_id=%s', message.from_user.id)
+    sent = bot.send_message(message.chat.id, '📝 Введите название корпуса для загрузки:')
+    bot.register_next_step_handler(sent, _receive_load_name)
+
+
+@bot.message_handler(func=lambda m: m.text == '📥 Импорт')
+def button_import(message: telebot.types.Message) -> None:
+    """Handle '📥 Импорт' button – import .txt files from the texts/ directory."""
+    logger.info('[Button/📥] user_id=%s', message.from_user.id)
+    user_id = message.from_user.id
+    texts_dir = TEXTS_DIR
+    result = db.import_texts_from_directory(user_id, texts_dir, analyzer=analyzer)
+    if 'error' in result:
+        bot.reply_to(message,
+                     f'❌ Ошибка при доступе к папке `{texts_dir}`: {result["error"]}',
+                     parse_mode='Markdown')
+        return
+    imported = result['imported']
+    errors = result['errors']
+    if imported == 0 and errors == 0:
+        bot.reply_to(message,
+                     f'📂 В папке `{texts_dir}` не найдено .txt файлов.',
+                     parse_mode='Markdown')
+        return
+    reply = f'✅ Загружено {imported} {_ru_plural(imported, "текст", "текста", "текстов")}'
+    if errors:
+        reply += f', {errors} {_ru_plural(errors, "ошибка", "ошибки", "ошибок")}'
     bot.reply_to(message, reply)
 
 
