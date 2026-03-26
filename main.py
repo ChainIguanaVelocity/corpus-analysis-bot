@@ -15,6 +15,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 from collections import Counter
 from sqlite3 import Error
 
@@ -32,6 +33,7 @@ DB_FILE: str = os.getenv('DB_FILE', 'corpus_analysis.sqlite3')
 LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
 MAX_TEXT_LENGTH: int = int(os.getenv('MAX_TEXT_LENGTH', '10000'))
 TOP_WORDS: int = int(os.getenv('TOP_WORDS', '20'))
+COLLECT_WINDOW: int = int(os.getenv('COLLECT_WINDOW', '3'))  # seconds
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -78,6 +80,16 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS named_analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                combined_text TEXT NOT NULL,
+                analysis_result TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         )
@@ -132,6 +144,22 @@ class Database:
         except Error as e:
             print(f'get_corpus_stats error: {e}')
             return {'count': 0, 'total_chars': 0}
+
+    def save_named_analysis(self, user_id: int, name: str, combined_text: str,
+                            analysis_result: str) -> int | None:
+        """Persist a named corpus analysis. Returns the new row id."""
+        sql = (
+            'INSERT INTO named_analyses(user_id, name, combined_text, analysis_result) '
+            'VALUES(?, ?, ?, ?)'
+        )
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, (user_id, name, combined_text, analysis_result))
+            self.conn.commit()
+            return cur.lastrowid
+        except Error as e:
+            print(f'save_named_analysis error: {e}')
+            return None
 
 # ---------------------------------------------------------------------------
 # Text analyser  (previously text_analyzer.py)
@@ -237,12 +265,97 @@ class DataVisualizer:
 analyzer = TextAnalyzer()
 db = Database(DB_FILE)
 vis = DataVisualizer()
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# ---------------------------------------------------------------------------
+# Per-user message-collection state (for the 3-second analysis window)
+# ---------------------------------------------------------------------------
+
+_user_buffers: dict[int, list[str]] = {}   # user_id -> buffered texts
+_user_timers: dict[int, threading.Timer] = {}  # user_id -> active debounce timer
+_buffer_lock = threading.Lock()
+
+
+def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
+    """Return the correct Russian plural form for *n*.
+
+    form1 — used for 1 (одно сообщение)
+    form2 — used for 2-4 (два сообщения)
+    form5 — used for 5+ and 11-19 (пять сообщений)
+    """
+    n_abs = abs(n) % 100
+    if 11 <= n_abs <= 19:
+        return form5
+    n1 = n_abs % 10
+    if n1 == 1:
+        return form1
+    if 2 <= n1 <= 4:
+        return form2
+    return form5
+
+
+def _flush_user_buffer(user_id: int, chat_id: int) -> None:
+    """Fire after COLLECT_WINDOW seconds of inactivity for a user.
+
+    Combines all buffered texts, runs full analysis, sends the results, and
+    then asks the user to name the corpus via a next-step handler.
+    """
+    with _buffer_lock:
+        texts = _user_buffers.pop(user_id, [])
+        _user_timers.pop(user_id, None)
+
+    if not texts:
+        return
+
+    # Persist each individual text so /corpus stats stay accurate.
+    for t in texts:
+        db.save_corpus_text(user_id, t)
+
+    combined_text = '\n'.join(texts)
+    result = analyzer.analyze(combined_text)
+    stats = result['stats']
+    freq = dict(list(result['frequency'].items())[:TOP_WORDS])
+
+    n = len(texts)
+    msg_form = _ru_plural(n, 'сообщения', 'сообщений', 'сообщений')
+    reply = (
+        f'📊 *Анализ {n} {msg_form}*\n\n'
+        f'*Статистика:*\n'
+        f'  • Слов (всего): {stats["total_words"]}\n'
+        f'  • Уникальных слов: {stats["unique_words"]}\n'
+        f'  • Предложений: {stats["sentences"]}\n'
+        f'  • Средняя длина слова: {stats["avg_word_length"]:.2f}\n'
+        f'  • Лексическое разнообразие: {stats["lexical_diversity"]:.2%}\n'
+        f'  • Токенов: {result["tokens_count"]}\n'
+        f'  • Уникальных лемм: {result["lemmas_count"]}\n\n'
+        f'*Топ {TOP_WORDS} слов:*\n'
+    )
+    for word, count in freq.items():
+        reply += f'  {word}: {count}\n'
+
+    sent = bot.send_message(chat_id, reply, parse_mode='Markdown')
+    bot.send_message(chat_id, '📝 Введите название для этого корпуса (или /skip, чтобы пропустить):')
+    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, combined_text, result)
+
+
+def _receive_corpus_name(message: telebot.types.Message, user_id: int,
+                         combined_text: str, result: dict) -> None:
+    """Next-step handler: receives the corpus name chosen by the user."""
+    if message.text and message.text.strip().lower() in ('/skip', 'skip'):
+        bot.reply_to(message, '⏭ Корпус не сохранён.')
+        return
+
+    name = (message.text or '').strip()
+    if not name:
+        bot.reply_to(message, '⏭ Название не указано. Корпус не сохранён.')
+        return
+
+    db.save_named_analysis(user_id, name, combined_text, json.dumps(result))
+    bot.reply_to(message, f'✅ Корпус *{name}* сохранён!', parse_mode='Markdown')
 
 # ---------------------------------------------------------------------------
 # Bot handlers  (previously bot.py)
 # ---------------------------------------------------------------------------
-
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 
 def _get_text(message: telebot.types.Message) -> str | None:
@@ -274,8 +387,10 @@ def start(message: telebot.types.Message) -> None:
         '  /wordcloud <текст> — облако слов\n'
         '  /stats <текст> — краткая статистика текста\n'
         '  /corpus — статистика вашего корпуса\n\n'
-        '📝 Вы также можете просто отправить текстовое сообщение, '
-        'чтобы добавить его в ваш корпус.\n\n'
+        '📝 Вы также можете просто отправить одно или несколько сообщений подряд.\n'
+        f'Через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
+        'после последнего сообщения бот проанализирует '
+        'все тексты вместе и попросит дать название корпусу.\n\n'
         'Введите текст после команды.',
         parse_mode='Markdown',
     )
@@ -386,7 +501,9 @@ def corpus(message: telebot.types.Message) -> None:
 
 @bot.message_handler(content_types=['text'])
 def add_to_corpus(message: telebot.types.Message) -> None:
-    """Accept any plain-text message and save it to the user's corpus."""
+    """Buffer plain-text messages; after COLLECT_WINDOW seconds of inactivity,
+    analyse them all together and ask the user to name the resulting corpus.
+    """
     # Ignore messages that start with '/' (commands not matched by other handlers).
     if message.text.startswith('/'):
         return
@@ -401,13 +518,17 @@ def add_to_corpus(message: telebot.types.Message) -> None:
         return
 
     user_id = message.from_user.id
-    db.save_corpus_text(user_id, text)
-    corpus_stats = db.get_corpus_stats(user_id)
-    bot.reply_to(
-        message,
-        f'✅ Текст добавлен в корпус.\n'
-        f'Всего текстов в вашем корпусе: {corpus_stats["count"]}.',
-    )
+    chat_id = message.chat.id
+
+    with _buffer_lock:
+        # Cancel the existing countdown so it resets on every new message.
+        if user_id in _user_timers:
+            _user_timers[user_id].cancel()
+        _user_buffers.setdefault(user_id, []).append(text)
+        timer = threading.Timer(COLLECT_WINDOW, _flush_user_buffer, args=(user_id, chat_id))
+        timer.daemon = True
+        _user_timers[user_id] = timer
+        timer.start()
 
 # ---------------------------------------------------------------------------
 # Entry point
