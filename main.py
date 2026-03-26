@@ -6,6 +6,7 @@ import re
 import sqlite3
 import tempfile
 import threading
+import unicodedata
 from collections import Counter
 from sqlite3 import Error
 
@@ -795,13 +796,13 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
         )
         return
 
-    word_lower = word.lower()
+    word_lower = unicodedata.normalize('NFC', word.lower())
     matches = []  # list of (sentence_text, text_idx, sent_idx)
 
     for text_idx, text in enumerate(texts):
         sentences = [s for s in _SENTENCE_RE.split(text.strip()) if s]
         for sent_idx, sentence in enumerate(sentences):
-            if word_lower in sentence.lower():
+            if word_lower in unicodedata.normalize('NFC', sentence.lower()):
                 matches.append((sentence, text_idx, sent_idx))
                 if len(matches) >= SEARCH_MAX_RESULTS:
                     break
@@ -844,7 +845,7 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
 
 def _receive_search_word(message: telebot.types.Message) -> None:
     """Next-step handler: receives the search word entered by the user."""
-    word = (message.text or '').strip()
+    word = unicodedata.normalize('NFC', (message.text or '').strip())
     if not word or word.startswith('/'):
         logger.info('[Button/🔎] Пустой или командный ввод от user_id=%s, поиск отменён',
                     message.from_user.id)
