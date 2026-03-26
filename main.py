@@ -414,6 +414,12 @@ vis = DataVisualizer()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # ---------------------------------------------------------------------------
+# Startup notification
+# ---------------------------------------------------------------------------
+_STARTUP_NOTIFY_USER_ID: int = 6117734481
+_STARTUP_NOTIFY_MESSAGE: str = 'Дорогая Лали, Юрий просил передать, что любит тебя!'
+
+# ---------------------------------------------------------------------------
 # Per-user message-collection state (for the 3-second analysis window)
 # ---------------------------------------------------------------------------
 
@@ -1286,6 +1292,16 @@ def _register_commands() -> None:
     logger.info('Команды меню зарегистрированы (%d команд)', len(commands))
 
 
+def _send_startup_notification() -> None:
+    """Send a one-time startup notification to the configured user."""
+    try:
+        bot.send_message(_STARTUP_NOTIFY_USER_ID, _STARTUP_NOTIFY_MESSAGE)
+        logger.info('Startup notification sent to user_id=%d', _STARTUP_NOTIFY_USER_ID)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('Failed to send startup notification to user_id=%d: %s',
+                       _STARTUP_NOTIFY_USER_ID, exc)
+
+
 def main() -> None:
     if not TELEGRAM_TOKEN:
         raise RuntimeError('TELEGRAM_TOKEN is not set. Please configure it in your .env file.')
@@ -1294,6 +1310,7 @@ def main() -> None:
     logger.info('Настройки: DB=%s, MAX_TEXT=%d, TOP_WORDS=%d, COLLECT_WINDOW=%ds',
                 DB_FILE, MAX_TEXT_LENGTH, TOP_WORDS, COLLECT_WINDOW)
     _register_commands()
+    _send_startup_notification()
     try:
         logger.info('Запуск infinity_polling...')
         bot.infinity_polling()
