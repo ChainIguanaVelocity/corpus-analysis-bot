@@ -387,8 +387,8 @@ class DataVisualizer:
 # ---------------------------------------------------------------------------
 # Bot globals
 # ---------------------------------------------------------------------------
-analyzer = TextAnalyzer()
 db = Database(DB_FILE)
+analyzer = TextAnalyzer()
 vis = DataVisualizer()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -417,6 +417,11 @@ def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
     if 2 <= n1 <= 4:
         return form2
     return form5
+
+
+def _escape_markdown(text: str) -> str:
+    """Escape special Markdown characters to prevent parse errors."""
+    return re.sub(r'([_*\[\]()~\\`>#+=|{}.!\-])', r'\\\1', text)
 
 
 def _flush_user_buffer(user_id: int, chat_id: int) -> None:
@@ -449,7 +454,7 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     logger.info('[Buffer] Анализ завершён, отправка результатов в chat_id=%s', chat_id)
 
     n = len(texts)
-    msg_form = _ru_plural(n, 'сообщения', 'сообщений', 'сообщений')
+    msg_form = _ru_plural(n, 'сообщение', 'сообщения', 'сообщений')
     reply = (
         f'📊 *Анализ {n} {msg_form}*\n\n'
         f'*Статистика:*\n'
@@ -485,9 +490,10 @@ def _receive_corpus_name(message: telebot.types.Message, user_id: int,
         bot.reply_to(message, '⏭ Название не указано. Корпус не сохранён.')
         return
 
-    db.save_named_analysis(user_id, name, combined_text, json.dumps(result))
+    db.save_named_analysis(user_id, name, combined_text,
+                           json.dumps({'stats': result['stats'], 'frequency': result.get('frequency', {})}))
     logger.info('[Buffer] Корпус "%s" успешно сохранён для user_id=%s', name, user_id)
-    bot.reply_to(message, f'✅ Корпус *{name}* сохранён!', parse_mode='Markdown')
+    bot.reply_to(message, f'✅ Корпус *{_escape_markdown(name)}* сохранён!', parse_mode='Markdown')
 
 # ---------------------------------------------------------------------------
 # Bot handlers  (previously bot.py)
@@ -698,10 +704,9 @@ def _send_corpus_record(message: telebot.types.Message, name: str, record: dict)
     """Send the text of a named corpus record to the user."""
     text = record['combined_text']
     created_at = record['created_at']
-    header = f'📄 *Корпус: {name}*\n_Сохранён: {created_at}_\n\n'
-    full_message = header + text
-    if len(full_message) <= 4096:
-        bot.reply_to(message, full_message, parse_mode='Markdown')
+    header = f'📄 *Корпус: {_escape_markdown(name)}*\n_Сохранён: {_escape_markdown(str(created_at))}_\n\n'
+    if len(header) + len(text) <= 4096:
+        bot.reply_to(message, header + text, parse_mode='Markdown')
     else:
         bot.reply_to(message, header, parse_mode='Markdown')
         for i in range(0, len(text), 4096):
@@ -723,7 +728,7 @@ def _receive_load_name(message: telebot.types.Message) -> None:
     logger.info('[/load] Поиск корпуса "%s" для user_id=%s (next-step)', name, user_id)
     record = db.get_named_analysis(user_id, name)
     if record is None:
-        bot.reply_to(message, f'❌ Корпус с названием *{name}* не найден.', parse_mode='Markdown')
+        bot.reply_to(message, f'❌ Корпус с названием *{_escape_markdown(name)}* не найден.', parse_mode='Markdown')
         return
     _send_corpus_record(message, name, record)
 
@@ -745,7 +750,7 @@ def load_corpus(message: telebot.types.Message) -> None:
     if record is None:
         bot.reply_to(
             message,
-            f'❌ Корпус с названием *{name}* не найден.',
+            f'❌ Корпус с названием *{_escape_markdown(name)}* не найден.',
             parse_mode='Markdown',
         )
         return
@@ -1068,6 +1073,10 @@ def main() -> None:
         logger.info('Запуск infinity_polling...')
         bot.infinity_polling()
     finally:
+        with _buffer_lock:
+            for timer in _user_timers.values():
+                timer.cancel()
+            _user_timers.clear()
         db.close_connection()
         logger.info('Database connection closed.')
 
