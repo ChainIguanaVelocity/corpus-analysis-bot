@@ -159,6 +159,36 @@ class Database:
             logger.error('[DB] get_corpus_stats error: %s', e)
             return {'count': 0, 'total_chars': 0}
 
+    def get_named_analysis(self, user_id: int, name: str) -> dict | None:
+        """Retrieve a saved named corpus by user_id and name.
+
+        Returns a dict with keys ``name``, ``combined_text``, ``analysis_result``,
+        ``created_at``, or *None* if not found.
+        """
+        logger.info('[DB] Поиск корпуса "%s" для user_id=%s', name, user_id)
+        sql = (
+            'SELECT name, combined_text, analysis_result, created_at '
+            'FROM named_analyses WHERE user_id = ? AND name = ? '
+            'ORDER BY id DESC LIMIT 1'
+        )
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, (user_id, name))
+            row = cur.fetchone()
+            if row is None:
+                logger.info('[DB] Корпус "%s" не найден для user_id=%s', name, user_id)
+                return None
+            logger.info('[DB] Корпус "%s" найден для user_id=%s', name, user_id)
+            return {
+                'name': row[0],
+                'combined_text': row[1],
+                'analysis_result': row[2],
+                'created_at': row[3],
+            }
+        except Error as e:
+            logger.error('[DB] get_named_analysis error: %s', e)
+            return None
+
     def save_named_analysis(self, user_id: int, name: str, combined_text: str,
                             analysis_result: str) -> int | None:
         """Persist a named corpus analysis. Returns the new row id."""
@@ -436,7 +466,8 @@ def start(message: telebot.types.Message) -> None:
         '  /frequency <текст> — диаграмма частотности слов\n'
         '  /wordcloud <текст> — облако слов\n'
         '  /stats <текст> — краткая статистика текста\n'
-        '  /corpus — статистика вашего корпуса\n\n'
+        '  /corpus — статистика вашего корпуса\n'
+        '  /load <название> — получить текст сохранённого корпуса\n\n'
         '📝 Вы также можете просто отправить одно или несколько сообщений подряд.\n'
         f'Через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
         'после последнего сообщения бот проанализирует '
@@ -564,6 +595,45 @@ def corpus(message: telebot.types.Message) -> None:
     )
     logger.info('[/corpus] Статистика отправлена user_id=%s: текстов=%s', user_id, corpus_stats['count'])
     bot.reply_to(message, reply, parse_mode='Markdown')
+
+
+@bot.message_handler(commands=['load'])
+def load_corpus(message: telebot.types.Message) -> None:
+    """/load <название> — вернуть сохранённый текст корпуса по названию."""
+    logger.info('[/load] user_id=%s', message.from_user.id)
+    parts = message.text.split(maxsplit=1)
+    name = parts[1].strip() if len(parts) > 1 else ''
+    if not name:
+        bot.reply_to(
+            message,
+            'Укажите название корпуса после команды. Пример:\n/load мой корпус',
+        )
+        return
+
+    user_id = message.from_user.id
+    logger.info('[/load] Поиск корпуса "%s" для user_id=%s', name, user_id)
+    record = db.get_named_analysis(user_id, name)
+    if record is None:
+        bot.reply_to(
+            message,
+            f'❌ Корпус с названием *{name}* не найден.',
+            parse_mode='Markdown',
+        )
+        return
+
+    text = record['combined_text']
+    created_at = record['created_at']
+    header = f'📄 *Корпус: {name}*\n_Сохранён: {created_at}_\n\n'
+    # Telegram limit is 4096 characters per message; send the rest in a second message.
+    full_message = header + text
+    if len(full_message) <= 4096:
+        bot.reply_to(message, full_message, parse_mode='Markdown')
+    else:
+        bot.reply_to(message, header, parse_mode='Markdown')
+        # Split the text into chunks of at most 4096 characters.
+        for i in range(0, len(text), 4096):
+            bot.send_message(message.chat.id, text[i:i + 4096])
+    logger.info('[/load] Текст корпуса "%s" отправлен user_id=%s (%d симв.)', name, user_id, len(text))
 
 
 @bot.message_handler(content_types=['text'])
