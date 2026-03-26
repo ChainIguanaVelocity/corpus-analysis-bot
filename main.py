@@ -620,11 +620,8 @@ def analyze(message: telebot.types.Message) -> None:
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
 
-    db.insert_analysis((user_id, json.dumps(result['stats'])))
     logger.info('[/analyze] Результаты отправлены user_id=%s', user_id)
-    sent = bot.reply_to(message, reply, parse_mode='Markdown')
-    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
+    bot.reply_to(message, reply, parse_mode='Markdown')
 
 
 @bot.message_handler(commands=['frequency'])
@@ -649,12 +646,7 @@ def frequency(message: telebot.types.Message) -> None:
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
     logger.info('[/frequency] Отправка топ-%d слов для user_id=%s', len(top), user_id)
-
-    db.insert_analysis((user_id, json.dumps(result['stats'])))
-    sent = bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
-    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    logger.info('[/frequency] Ожидаем название корпуса (user_id=%s)', user_id)
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
+    bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
 
 
 @bot.message_handler(commands=['wordcloud'])
@@ -683,11 +675,6 @@ def wordcloud(message: telebot.types.Message) -> None:
         os.unlink(image_path)
         logger.info('[/wordcloud] Временный файл удалён: %s', image_path)
 
-    db.insert_analysis((user_id, json.dumps(result['stats'])))
-    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    logger.info('[/wordcloud] Ожидаем название корпуса (user_id=%s)', user_id)
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
-
 
 @bot.message_handler(commands=['stats'])
 def stats(message: telebot.types.Message) -> None:
@@ -709,10 +696,7 @@ def stats(message: telebot.types.Message) -> None:
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
     logger.info('[/stats] Статистика отправлена user_id=%s', user_id)
-    sent = bot.reply_to(message, reply, parse_mode='Markdown')
-    bot.send_message(message.chat.id, '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    logger.info('[/stats] Ожидаем название корпуса (user_id=%s)', user_id)
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, {'stats': s})
+    bot.reply_to(message, reply, parse_mode='Markdown')
 
 
 @bot.message_handler(commands=['corpus'])
@@ -1049,11 +1033,7 @@ def button_analyze(message: telebot.types.Message) -> None:
     )
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
-    db.insert_analysis((user_id, json.dumps(result['stats'])))
-    sent = bot.reply_to(message, reply, parse_mode='Markdown')
-    bot.send_message(message.chat.id,
-                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
+    bot.reply_to(message, reply, parse_mode='Markdown')
 
 
 @bot.message_handler(func=lambda m: m.text == '📈 Частота')
@@ -1074,11 +1054,7 @@ def button_frequency(message: telebot.types.Message) -> None:
     lines = ['📊 *Частота слов корпуса:*\n\n']
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
-    db.insert_analysis((user_id, json.dumps(result['stats'])))
-    sent = bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
-    bot.send_message(message.chat.id,
-                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
+    bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
 
 
 @bot.message_handler(func=lambda m: m.text == '☁️ Облако')
@@ -1098,13 +1074,9 @@ def button_wordcloud(message: telebot.types.Message) -> None:
     image_path = vis.plot_word_cloud(freq_dict, title='Облако слов корпуса')
     try:
         with open(image_path, 'rb') as img:
-            sent = bot.send_photo(message.chat.id, img, caption='Облако слов корпуса')
+            bot.send_photo(message.chat.id, img, caption='Облако слов корпуса')
     finally:
         os.unlink(image_path)
-    db.insert_analysis((user_id, json.dumps(result['stats'])))
-    bot.send_message(message.chat.id,
-                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, result)
 
 
 @bot.message_handler(func=lambda m: m.text == '📋 Статистика')
@@ -1126,9 +1098,6 @@ def button_stats(message: telebot.types.Message) -> None:
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
     sent = bot.reply_to(message, reply, parse_mode='Markdown')
-    bot.send_message(message.chat.id,
-                     '📝 Введите название для сохранения корпуса (или /skip, чтобы пропустить):')
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, text, {'stats': s})
 
 
 @bot.message_handler(func=lambda m: m.text == '📚 Корпус')
