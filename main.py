@@ -38,10 +38,30 @@ COLLECT_WINDOW: int = int(os.getenv('COLLECT_WINDOW', '3'))  # seconds
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
+class ColoredFormatter(logging.Formatter):
+    """Logging formatter that adds ANSI color codes based on log level."""
+
+    _COLORS = {
+        logging.DEBUG:    '\033[36m',   # Cyan
+        logging.INFO:     '\033[32m',   # Green
+        logging.WARNING:  '\033[33m',   # Yellow
+        logging.ERROR:    '\033[31m',   # Red
+        logging.CRITICAL: '\033[35m',   # Magenta
+    }
+    _RESET = '\033[0m'
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = self._COLORS.get(record.levelno, '')
+        message = super().format(record)
+        return f'{color}{message}{self._RESET}'
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(
+    ColoredFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 )
+logging.root.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+logging.root.addHandler(_handler)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
