@@ -227,6 +227,41 @@ class Database:
             logger.error('[DB] save_named_analysis error: %s', e)
             return None
 
+    def import_texts_from_directory(self, user_id: int, texts_dir: str = 'texts') -> dict:
+        """Import all .txt files from *texts_dir* into ``corpus_texts`` for *user_id*.
+
+        Returns a dict with keys:
+          ``imported`` — number of files successfully loaded,
+          ``errors``   — number of files that could not be read,
+          ``error``    — (optional) directory-level error message.
+        """
+        logger.info('[DB] Импорт текстов из папки "%s" для user_id=%s', texts_dir, user_id)
+        try:
+            all_entries = os.listdir(texts_dir)
+        except OSError as e:
+            logger.error('[DB] Ошибка при чтении папки "%s": %s', texts_dir, e)
+            return {'imported': 0, 'errors': 0, 'error': str(e)}
+
+        txt_files = [f for f in all_entries if f.lower().endswith('.txt')]
+        logger.info('[DB] Найдено %d .txt файлов в папке "%s"', len(txt_files), texts_dir)
+
+        imported = 0
+        errors = 0
+        for filename in txt_files:
+            filepath = os.path.join(texts_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as fh:
+                    text = fh.read()
+                self.save_corpus_text(user_id, text)
+                imported += 1
+                logger.info('[DB] Файл "%s" успешно импортирован', filename)
+            except (OSError, UnicodeDecodeError) as e:
+                errors += 1
+                logger.error('[DB] Ошибка при импорте файла "%s": %s', filename, e)
+
+        logger.info('[DB] Импорт завершён: успешно=%d, ошибок=%d', imported, errors)
+        return {'imported': imported, 'errors': errors}
+
 # ---------------------------------------------------------------------------
 # Text analyser  (previously text_analyzer.py)
 # ---------------------------------------------------------------------------
@@ -484,6 +519,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('Краткая статистика текста'),
         telebot.types.KeyboardButton('Статистика вашего корпуса'),
         telebot.types.KeyboardButton('Получить текст корпуса по названию'),
+        telebot.types.KeyboardButton('Импортировать тексты из папки texts/'),
     )
 
     bot.reply_to(
@@ -496,7 +532,8 @@ def start(message: telebot.types.Message) -> None:
         '  /wordcloud <текст> — облако слов\n'
         '  /stats <текст> — краткая статистика текста\n'
         '  /corpus — статистика вашего корпуса\n'
-        '  /load <название> — получить текст сохранённого корпуса\n\n'
+        '  /load <название> — получить текст сохранённого корпуса\n'
+        '  /import_texts — импортировать .txt файлы из папки texts/\n\n'
         '📝 Вы также можете просто отправить одно или несколько сообщений подряд.\n'
         f'Через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
         'после последнего сообщения бот проанализирует '
@@ -710,6 +747,42 @@ def load_corpus(message: telebot.types.Message) -> None:
     _send_corpus_record(message, name, record)
 
 
+@bot.message_handler(commands=['import_texts'])
+def import_texts(message: telebot.types.Message) -> None:
+    """/import_texts — import all .txt files from the texts/ folder into the user's corpus."""
+    logger.info('[/import_texts] user_id=%s', message.from_user.id)
+    user_id = message.from_user.id
+
+    texts_dir = 'texts'
+    result = db.import_texts_from_directory(user_id, texts_dir)
+
+    if 'error' in result:
+        bot.reply_to(
+            message,
+            f'❌ Ошибка при доступе к папке `{texts_dir}`: {result["error"]}',
+            parse_mode='Markdown',
+        )
+        return
+
+    imported = result['imported']
+    errors = result['errors']
+
+    if imported == 0 and errors == 0:
+        bot.reply_to(
+            message,
+            f'📂 В папке `{texts_dir}` не найдено .txt файлов.',
+            parse_mode='Markdown',
+        )
+        return
+
+    reply = f'✅ Загружено {imported} текстов'
+    if errors:
+        reply += f', ошибок: {errors}'
+    logger.info('[/import_texts] Импорт завершён для user_id=%s: загружено=%d, ошибок=%d',
+                user_id, imported, errors)
+    bot.reply_to(message, reply)
+
+
 @bot.message_handler(content_types=['text'])
 def add_to_corpus(message: telebot.types.Message) -> None:
     """Buffer plain-text messages; after COLLECT_WINDOW seconds of inactivity,
@@ -756,13 +829,14 @@ def add_to_corpus(message: telebot.types.Message) -> None:
 def _register_commands() -> None:
     """Register bot commands so they appear as menu buttons in Telegram."""
     commands = [
-        telebot.types.BotCommand('start',     'Начать работу с ботом'),
-        telebot.types.BotCommand('analyze',   'Статистика и частые слова текста'),
-        telebot.types.BotCommand('frequency', 'Частотность слов в тексте'),
-        telebot.types.BotCommand('wordcloud', 'Облако слов для текста'),
-        telebot.types.BotCommand('stats',     'Краткая статистика текста'),
-        telebot.types.BotCommand('corpus',    'Статистика вашего корпуса'),
-        telebot.types.BotCommand('load',      'Получить текст корпуса по названию'),
+        telebot.types.BotCommand('start',        'Начать работу с ботом'),
+        telebot.types.BotCommand('analyze',      'Статистика и частые слова текста'),
+        telebot.types.BotCommand('frequency',    'Частотность слов в тексте'),
+        telebot.types.BotCommand('wordcloud',    'Облако слов для текста'),
+        telebot.types.BotCommand('stats',        'Краткая статистика текста'),
+        telebot.types.BotCommand('corpus',       'Статистика вашего корпуса'),
+        telebot.types.BotCommand('load',         'Получить текст корпуса по названию'),
+        telebot.types.BotCommand('import_texts', 'Импортировать .txt файлы из папки texts/'),
     ]
     bot.set_my_commands(commands)
     logger.info('Команды меню зарегистрированы (%d команд)', len(commands))
