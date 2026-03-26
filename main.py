@@ -415,6 +415,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 _user_buffers: dict[int, list[str]] = {}   # user_id -> buffered texts
 _user_timers: dict[int, threading.Timer] = {}  # user_id -> active debounce timer
 _buffer_lock = threading.Lock()
+_auto_collect_enabled: set[int] = set()   # user_ids with auto-collect enabled (off by default)
 
 
 def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
@@ -530,6 +531,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('📚 Корпус'),
         telebot.types.KeyboardButton('📂 Загрузить'),
         telebot.types.KeyboardButton('📥 Импорт'),
+        telebot.types.KeyboardButton('🔄 Автосбор'),
     )
 
     bot.reply_to(
@@ -537,9 +539,11 @@ def start(message: telebot.types.Message) -> None:
         '👋 Добро пожаловать в *Бот анализа корпуса*!\n\n'
         'Бот анализирует ваш личный корпус текстов.\n\n'
         'Как пополнить корпус:\n'
-        '  Просто отправьте одно или несколько сообщений подряд. '
-        f'Через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
-        'после последнего сообщения бот сохранит каждое как отдельный текст в вашем корпусе.\n\n'
+        '  Включите автосбор командой /collect (или кнопкой 🔄 Автосбор) — '
+        'по умолчанию он *отключён*. '
+        f'Когда автосбор включён, каждое текстовое сообщение через {COLLECT_WINDOW} '
+        f'{_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
+        'после отправки автоматически сохраняется в ваш корпус.\n\n'
         'Команды анализа корпуса:\n'
         '  /analyze — статистика + самые частые слова корпуса\n'
         '  /frequency — частотность слов в корпусе\n'
@@ -547,7 +551,8 @@ def start(message: telebot.types.Message) -> None:
         '  /stats — краткая статистика корпуса\n'
         '  /corpus — размер вашего корпуса\n'
         '  /load <название> — получить текст именованного корпуса\n'
-        '  /import\\_texts — импортировать .txt файлы из папки texts/',
+        '  /import\\_texts — импортировать .txt файлы из папки texts/\n'
+        '  /collect — включить/выключить автосбор текстовых сообщений',
         parse_mode='Markdown',
         reply_markup=markup,
     )
@@ -925,11 +930,14 @@ def button_corpus(message: telebot.types.Message) -> None:
     logger.info('[Button/📚] user_id=%s', message.from_user.id)
     user_id = message.from_user.id
     corpus_stats = db.get_corpus_stats(user_id)
+    collect_status = '🟢 включён' if user_id in _auto_collect_enabled else '🔴 отключён'
     reply = (
         f'📚 *Ваш корпус*\n\n'
         f'  • Текстов сохранено: {corpus_stats["count"]}\n'
         f'  • Всего символов: {corpus_stats["total_chars"]}\n\n'
-        f'Отправьте любое текстовое сообщение, чтобы добавить его в корпус.'
+        f'Автосбор: {collect_status}\n'
+        f'Используйте /collect или кнопку 🔄 Автосбор, чтобы включить/выключить автоматическое '
+        f'сохранение текстовых сообщений в корпус.'
     )
     bot.reply_to(message, reply, parse_mode='Markdown')
 
@@ -967,11 +975,45 @@ def button_import(message: telebot.types.Message) -> None:
     bot.reply_to(message, reply)
 
 
+@bot.message_handler(commands=['collect'])
+def toggle_collect(message: telebot.types.Message) -> None:
+    """/collect — toggle auto-collect mode on/off for the current user."""
+    user_id = message.from_user.id
+    if user_id in _auto_collect_enabled:
+        _auto_collect_enabled.discard(user_id)
+        logger.info('[/collect] Автосбор отключён для user_id=%s', user_id)
+        bot.reply_to(
+            message,
+            '🔴 *Автосбор отключён.*\n'
+            'Текстовые сообщения больше не будут автоматически сохраняться в корпус.',
+            parse_mode='Markdown',
+        )
+    else:
+        _auto_collect_enabled.add(user_id)
+        logger.info('[/collect] Автосбор включён для user_id=%s', user_id)
+        bot.reply_to(
+            message,
+            '🟢 *Автосбор включён.*\n'
+            f'Теперь каждое текстовое сообщение автоматически сохраняется в ваш корпус '
+            f'(через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} после последнего).',
+            parse_mode='Markdown',
+        )
+
+
+@bot.message_handler(func=lambda m: m.text == '🔄 Автосбор')
+def button_toggle_collect(message: telebot.types.Message) -> None:
+    """Handle '🔄 Автосбор' button – toggle auto-collect mode."""
+    logger.info('[Button/🔄] user_id=%s', message.from_user.id)
+    toggle_collect(message)
+
+
 @bot.message_handler(content_types=['text'])
 def add_to_corpus(message: telebot.types.Message) -> None:
     """Buffer plain-text messages; after COLLECT_WINDOW seconds of inactivity,
     analyse them all together and save each one as an individual text in the
     user's corpus (corpus_texts). Plain messages are texts, not named corpora.
+
+    This handler only runs when auto-collect is enabled for the user via /collect.
     """
     # Ignore messages that start with '/' (commands not matched by other handlers).
     if message.text.startswith('/'):
@@ -980,15 +1022,22 @@ def add_to_corpus(message: telebot.types.Message) -> None:
     text = message.text.strip()
     if not text:
         return
+
+    user_id = message.from_user.id
+
+    # Auto-collect is disabled by default; silently skip if the user hasn't enabled it.
+    if user_id not in _auto_collect_enabled:
+        logger.debug('[Buffer] Автосбор отключён для user_id=%s, сообщение проигнорировано', user_id)
+        return
+
     if len(text) > MAX_TEXT_LENGTH:
-        logger.info('[Buffer] Текст слишком длинный (%d симв.) от user_id=%s', len(text), message.from_user.id)
+        logger.info('[Buffer] Текст слишком длинный (%d симв.) от user_id=%s', len(text), user_id)
         bot.reply_to(
             message,
             f'Текст слишком длинный. Максимальная длина: {MAX_TEXT_LENGTH} символов.',
         )
         return
 
-    user_id = message.from_user.id
     chat_id = message.chat.id
 
     with _buffer_lock:
@@ -1021,6 +1070,7 @@ def _register_commands() -> None:
         telebot.types.BotCommand('corpus',       'Статистика вашего корпуса'),
         telebot.types.BotCommand('load',         'Получить текст корпуса по названию'),
         telebot.types.BotCommand('import_texts', 'Импортировать .txt файлы из папки texts/'),
+        telebot.types.BotCommand('collect',      'Включить/выключить автосбор текстовых сообщений'),
     ]
     bot.set_my_commands(commands)
     logger.info('Команды меню зарегистрированы (%d команд)', len(commands))
