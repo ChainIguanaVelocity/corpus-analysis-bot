@@ -382,7 +382,7 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     """Fire after COLLECT_WINDOW seconds of inactivity for a user.
 
     Combines all buffered texts, runs full analysis, sends the results, and
-    then asks the user to name the corpus via a next-step handler.
+    saves each message as an individual text in the user's corpus.
     """
     logger.info('[Buffer] Таймер сработал для user_id=%s, chat_id=%s', user_id, chat_id)
     with _buffer_lock:
@@ -424,10 +424,8 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
 
-    sent = bot.send_message(chat_id, reply, parse_mode='Markdown')
-    bot.send_message(chat_id, '📝 Введите название для этого корпуса (или /skip, чтобы пропустить):')
-    logger.info('[Buffer] Результаты отправлены, ожидаем название корпуса (user_id=%s)', user_id)
-    bot.register_next_step_handler(sent, _receive_corpus_name, user_id, combined_text, result)
+    bot.send_message(chat_id, reply, parse_mode='Markdown')
+    logger.info('[Buffer] Результаты анализа отправлены (user_id=%s)', user_id)
 
 
 def _receive_corpus_name(message: telebot.types.Message, user_id: int,
@@ -491,7 +489,7 @@ def start(message: telebot.types.Message) -> None:
         '📝 Вы также можете просто отправить одно или несколько сообщений подряд.\n'
         f'Через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
         'после последнего сообщения бот проанализирует '
-        'все тексты вместе и попросит дать название корпусу.\n\n'
+        'все тексты вместе и сохранит каждое как отдельный текст в вашем корпусе.\n\n'
         'Введите текст после команды.',
         parse_mode='Markdown',
     )
@@ -703,7 +701,8 @@ def load_corpus(message: telebot.types.Message) -> None:
 @bot.message_handler(content_types=['text'])
 def add_to_corpus(message: telebot.types.Message) -> None:
     """Buffer plain-text messages; after COLLECT_WINDOW seconds of inactivity,
-    analyse them all together and ask the user to name the resulting corpus.
+    analyse them all together and save each one as an individual text in the
+    user's corpus (corpus_texts). Plain messages are texts, not named corpora.
     """
     # Ignore messages that start with '/' (commands not matched by other handlers).
     if message.text.startswith('/'):
