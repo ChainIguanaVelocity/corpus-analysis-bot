@@ -437,7 +437,7 @@ def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
 
 def _escape_markdown(text: str) -> str:
     """Escape special Markdown characters to prevent parse errors."""
-    return re.sub(r'([_*\[\]()~\\`>#+=|{}.!\-])', r'\\\1', text)
+    return re.sub(r'([_*\[\]()~`>#+=|{}.!-])', r'\\\1', text)
 
 
 def _flush_user_buffer(user_id: int, chat_id: int) -> None:
@@ -535,20 +535,20 @@ def start(message: telebot.types.Message) -> None:
     bot.reply_to(
         message,
         '👋 Добро пожаловать в *Бот анализа корпуса*!\n\n'
-        'Бот анализирует ваш личный корпус текстов\\.\n\n'
+        'Бот анализирует ваш личный корпус текстов.\n\n'
         'Как пополнить корпус:\n'
-        '  Просто отправьте одно или несколько сообщений подряд\\. '
+        '  Просто отправьте одно или несколько сообщений подряд. '
         f'Через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
-        'после последнего сообщения бот сохранит каждое как отдельный текст в вашем корпусе\\.\n\n'
+        'после последнего сообщения бот сохранит каждое как отдельный текст в вашем корпусе.\n\n'
         'Команды анализа корпуса:\n'
-        '  /analyze — статистика \\+ самые частые слова корпуса\n'
+        '  /analyze — статистика + самые частые слова корпуса\n'
         '  /frequency — частотность слов в корпусе\n'
         '  /wordcloud — облако слов корпуса\n'
         '  /stats — краткая статистика корпуса\n'
         '  /corpus — размер вашего корпуса\n'
         '  /load <название> — получить текст именованного корпуса\n'
-        '  /import\\_texts — импортировать \\.txt файлы из папки texts/',
-        parse_mode='MarkdownV2',
+        '  /import\\_texts — импортировать .txt файлы из папки texts/',
+        parse_mode='Markdown',
         reply_markup=markup,
     )
 
@@ -565,9 +565,9 @@ def _get_user_corpus_text(message: telebot.types.Message) -> str | None:
         logger.info('[Corpus] Корпус пуст для user_id=%s', user_id)
         bot.reply_to(
             message,
-            '📭 Ваш корпус пуст\\. Отправьте несколько текстовых сообщений, '
-            'чтобы наполнить его, а затем повторите команду\\.',
-            parse_mode='MarkdownV2',
+            '📭 Ваш корпус пуст. Отправьте несколько текстовых сообщений, '
+            'чтобы наполнить его, а затем повторите команду.',
+            parse_mode='Markdown',
         )
         return None
     return '\n'.join(texts)
