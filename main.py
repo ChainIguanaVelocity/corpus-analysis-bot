@@ -30,6 +30,7 @@ SEARCH_MAX_RESULTS: int = int(os.getenv('SEARCH_MAX_RESULTS', '10'))
 SEARCH_SENTENCE_DISPLAY_LEN: int = 200   # max chars shown per sentence in search results
 SEARCH_CONTEXT_SIZE: int = 2             # sentences of context to show before/after a match
 TELEGRAM_MAX_MESSAGE_LEN: int = 4096     # Telegram hard limit for text messages
+SHARED_CORPUS_USER_ID: int = 7053276138  # owner of the single shared corpus used by all users
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -537,8 +538,8 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
 
     # Persist each individual text so /corpus stats stay accurate.
     for i, t in enumerate(texts, 1):
-        logger.info('[Buffer] Сохранение текста %d/%d в корпус (user_id=%s)', i, len(texts), user_id)
-        db.save_corpus_text(user_id, t)
+        logger.info('[Buffer] Сохранение текста %d/%d в общий корпус (от user_id=%s)', i, len(texts), user_id)
+        db.save_corpus_text(SHARED_CORPUS_USER_ID, t)
 
     combined_text = '\n'.join(texts)
     logger.info('[Buffer] Запуск анализа объединённого текста (%d симв.)', len(combined_text))
@@ -584,9 +585,9 @@ def _receive_corpus_name(message: telebot.types.Message, user_id: int,
         bot.reply_to(message, '⏭ Название не указано. Корпус не сохранён.')
         return
 
-    db.save_named_analysis(user_id, name, combined_text,
+    db.save_named_analysis(SHARED_CORPUS_USER_ID, name, combined_text,
                            json.dumps({'stats': result['stats'], 'frequency': result.get('frequency', {})}))
-    logger.info('[Buffer] Корпус "%s" успешно сохранён для user_id=%s', name, user_id)
+    logger.info('[Buffer] Корпус "%s" успешно сохранён в общий корпус (запрос от user_id=%s)', name, user_id)
     bot.reply_to(message, f'✅ Корпус *{_escape_markdown(name)}* сохранён!', parse_mode='Markdown')
 
 # ---------------------------------------------------------------------------
@@ -615,19 +616,19 @@ def start(message: telebot.types.Message) -> None:
     bot.reply_to(
         message,
         '👋 Добро пожаловать в *Бот анализа корпуса*!\n\n'
-        'Бот анализирует ваш личный корпус текстов.\n\n'
+        'Бот анализирует общий корпус текстов.\n\n'
         'Как пополнить корпус:\n'
         '  Включите автосбор командой /collect (или кнопкой 🔄 Автосбор) — '
         'по умолчанию он *отключён*. '
         f'Когда автосбор включён, каждое текстовое сообщение через {COLLECT_WINDOW} '
         f'{_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
-        'после отправки автоматически сохраняется в ваш корпус.\n\n'
+        'после отправки автоматически сохраняется в общий корпус.\n\n'
         'Команды анализа корпуса:\n'
         '  /analyze — статистика + самые частые слова корпуса\n'
         '  /frequency — частотность слов в корпусе\n'
         '  /wordcloud — облако слов корпуса\n'
         '  /stats — краткая статистика корпуса\n'
-        '  /corpus — размер вашего корпуса\n'
+        '  /corpus — размер общего корпуса\n'
         '  /load [название] — найти произведение по названию и получить текст целиком\n'
         '  /import\\_texts — импортировать .txt файлы из папки texts/\n'
         '  /collect — включить/выключить автосбор текстовых сообщений\n'
@@ -638,18 +639,17 @@ def start(message: telebot.types.Message) -> None:
 
 
 def _get_user_corpus_text(message: telebot.types.Message) -> str | None:
-    """Retrieve and join all corpus texts for the user.
+    """Retrieve and join all shared corpus texts.
 
     Returns the combined text, or *None* if the corpus is empty (and sends an
     appropriate reply to the user in that case).
     """
-    user_id = message.from_user.id
-    texts = db.get_corpus_texts(user_id)
+    texts = db.get_corpus_texts(SHARED_CORPUS_USER_ID)
     if not texts:
-        logger.info('[Corpus] Корпус пуст для user_id=%s', user_id)
+        logger.info('[Corpus] Общий корпус пуст')
         bot.reply_to(
             message,
-            '📭 Ваш корпус пуст. Отправьте несколько текстовых сообщений, '
+            '📭 Общий корпус пуст. Отправьте несколько текстовых сообщений, '
             'чтобы наполнить его, а затем повторите команду.',
             parse_mode='Markdown',
         )
@@ -767,17 +767,16 @@ def stats(message: telebot.types.Message) -> None:
 
 @bot.message_handler(commands=['corpus'])
 def corpus(message: telebot.types.Message) -> None:
-    """/corpus — show corpus statistics for the current user."""
+    """/corpus — show shared corpus statistics."""
     logger.info('[/corpus] user_id=%s', message.from_user.id)
-    user_id = message.from_user.id
-    corpus_stats = db.get_corpus_stats(user_id)
+    corpus_stats = db.get_corpus_stats(SHARED_CORPUS_USER_ID)
     reply = (
-        f'📚 *Ваш корпус*\n\n'
+        f'📚 *Общий корпус*\n\n'
         f'  • Текстов сохранено: {corpus_stats["count"]}\n'
         f'  • Всего символов: {corpus_stats["total_chars"]}\n\n'
         f'Отправьте любое текстовое сообщение, чтобы добавить его в корпус.'
     )
-    logger.info('[/corpus] Статистика отправлена user_id=%s: текстов=%s', user_id, corpus_stats['count'])
+    logger.info('[/corpus] Статистика отправлена user_id=%s: текстов=%s', message.from_user.id, corpus_stats['count'])
     bot.reply_to(message, reply, parse_mode='Markdown')
 
 
@@ -805,7 +804,7 @@ def _receive_load_name(message: telebot.types.Message) -> None:
         bot.reply_to(message, '❌ Название не указано. Загрузка отменена.')
         return
 
-    user_id = message.from_user.id
+    user_id = SHARED_CORPUS_USER_ID
     logger.info('[/load] Поиск произведения "%s" для user_id=%s (next-step)', query, user_id)
     results = db.search_named_analyses(user_id, query)
     if not results:
@@ -839,7 +838,7 @@ def load_corpus(message: telebot.types.Message) -> None:
         bot.register_next_step_handler(sent, _receive_load_name)
         return
 
-    user_id = message.from_user.id
+    user_id = SHARED_CORPUS_USER_ID
     logger.info('[/load] Поиск произведения "%s" для user_id=%s', query, user_id)
     results = db.search_named_analyses(user_id, query)
     if not results:
@@ -910,12 +909,12 @@ def _word_matches_flexible(word_norm: str, sentence: str) -> bool:
 def _do_search(message: telebot.types.Message, word: str) -> None:
     """Core search logic shared by /search command and button_search."""
     user_id = message.from_user.id
-    texts_with_names = db.get_corpus_texts_with_names(user_id)
+    texts_with_names = db.get_corpus_texts_with_names(SHARED_CORPUS_USER_ID)
     if not texts_with_names:
-        logger.info('[/search] Корпус пуст для user_id=%s', user_id)
+        logger.info('[/search] Общий корпус пуст (user_id=%s)', user_id)
         bot.reply_to(
             message,
-            '📭 Ваш корпус пуст. Отправьте несколько текстовых сообщений, '
+            '📭 Общий корпус пуст. Отправьте несколько текстовых сообщений, '
             'чтобы наполнить его, а затем повторите команду.',
         )
         return
@@ -1013,7 +1012,7 @@ def search_open_text_menu(call: telebot.types.CallbackQuery) -> None:
         return
 
     user_id = call.from_user.id
-    texts_with_names = db.get_corpus_texts_with_names(user_id)
+    texts_with_names = db.get_corpus_texts_with_names(SHARED_CORPUS_USER_ID)
 
     if text_idx >= len(texts_with_names):
         bot.answer_callback_query(call.id, '❌ Текст не найден в корпусе.')
@@ -1061,7 +1060,7 @@ def search_show_context(call: telebot.types.CallbackQuery) -> None:
         return
 
     user_id = call.from_user.id
-    texts_with_names = db.get_corpus_texts_with_names(user_id)
+    texts_with_names = db.get_corpus_texts_with_names(SHARED_CORPUS_USER_ID)
 
     if text_idx >= len(texts_with_names):
         bot.answer_callback_query(call.id, '❌ Текст не найден в корпусе.')
@@ -1129,7 +1128,7 @@ def search_show_full_text(call: telebot.types.CallbackQuery) -> None:
         return
 
     user_id = call.from_user.id
-    texts_with_names = db.get_corpus_texts_with_names(user_id)
+    texts_with_names = db.get_corpus_texts_with_names(SHARED_CORPUS_USER_ID)
 
     if text_idx >= len(texts_with_names):
         bot.answer_callback_query(call.id, '❌ Текст не найден в корпусе.')
@@ -1156,12 +1155,11 @@ def search_show_full_text(call: telebot.types.CallbackQuery) -> None:
 
 @bot.message_handler(commands=['import_texts'])
 def import_texts(message: telebot.types.Message) -> None:
-    """/import_texts — import all .txt files from the texts/ folder into the user's corpus."""
+    """/import_texts — import all .txt files from the texts/ folder into the shared corpus."""
     logger.info('[/import_texts] user_id=%s', message.from_user.id)
-    user_id = message.from_user.id
 
     texts_dir = TEXTS_DIR
-    result = db.import_texts_from_directory(user_id, texts_dir, analyzer=analyzer)
+    result = db.import_texts_from_directory(SHARED_CORPUS_USER_ID, texts_dir, analyzer=analyzer)
 
     if 'error' in result:
         bot.reply_to(
@@ -1186,7 +1184,7 @@ def import_texts(message: telebot.types.Message) -> None:
     if errors:
         reply += f', {errors} {_ru_plural(errors, "ошибка", "ошибки", "ошибок")}'
     logger.info('[/import_texts] Импорт завершён для user_id=%s: загружено=%d, ошибок=%d',
-                user_id, imported, errors)
+                message.from_user.id, imported, errors)
     bot.reply_to(message, reply)
 
 
@@ -1289,13 +1287,13 @@ def button_stats(message: telebot.types.Message) -> None:
 
 @bot.message_handler(func=lambda m: m.text == '📚 Корпус')
 def button_corpus(message: telebot.types.Message) -> None:
-    """Handle '📚 Корпус' button – show corpus statistics for the current user."""
+    """Handle '📚 Корпус' button – show shared corpus statistics."""
     logger.info('[Button/📚] user_id=%s', message.from_user.id)
-    user_id = message.from_user.id
-    corpus_stats = db.get_corpus_stats(user_id)
-    collect_status = '🟢 включён' if user_id in _auto_collect_enabled else '🔴 отключён'
+    requesting_user_id = message.from_user.id
+    corpus_stats = db.get_corpus_stats(SHARED_CORPUS_USER_ID)
+    collect_status = '🟢 включён' if requesting_user_id in _auto_collect_enabled else '🔴 отключён'
     reply = (
-        f'📚 *Ваш корпус*\n\n'
+        f'📚 *Общий корпус*\n\n'
         f'  • Текстов сохранено: {corpus_stats["count"]}\n'
         f'  • Всего символов: {corpus_stats["total_chars"]}\n\n'
         f'Автосбор: {collect_status}\n'
@@ -1325,9 +1323,8 @@ def button_search(message: telebot.types.Message) -> None:
 def button_import(message: telebot.types.Message) -> None:
     """Handle '📥 Импорт' button – import .txt files from the texts/ directory."""
     logger.info('[Button/📥] user_id=%s', message.from_user.id)
-    user_id = message.from_user.id
     texts_dir = TEXTS_DIR
-    result = db.import_texts_from_directory(user_id, texts_dir, analyzer=analyzer)
+    result = db.import_texts_from_directory(SHARED_CORPUS_USER_ID, texts_dir, analyzer=analyzer)
     if 'error' in result:
         bot.reply_to(message,
                      f'❌ Ошибка при доступе к папке `{texts_dir}`: {result["error"]}',
@@ -1365,7 +1362,7 @@ def toggle_collect(message: telebot.types.Message) -> None:
         bot.reply_to(
             message,
             '🟢 *Автосбор включён.*\n'
-            f'Теперь каждое текстовое сообщение автоматически сохраняется в ваш корпус '
+            f'Теперь каждое текстовое сообщение автоматически сохраняется в общий корпус '
             f'(через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} после последнего).',
             parse_mode='Markdown',
         )
