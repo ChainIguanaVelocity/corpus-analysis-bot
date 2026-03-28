@@ -11,4 +11,5 @@ uniparser-ossetic~=2.0
 
 # Machine translation
 deep-translator~=1.11
+requests~=2.31
 
