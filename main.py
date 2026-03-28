@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import unicodedata
+import uuid
 from collections import Counter
 from sqlite3 import Error
 
@@ -705,7 +706,10 @@ class Translator:
     _CHUNK_SIZE = 4500  # safe margin below the 5000-char Google Translate limit
     # Languages that Google Translate does not support — route directly to Yandex.
     _YANDEX_LANGUAGES: frozenset[str] = frozenset({'os'})
-    _YANDEX_API_URL: str = 'https://translate.api.cloud.yandex.net/translate/v2/translate'
+    # Free widget endpoint — works without any API key.
+    _YANDEX_FREE_URL: str = 'https://translate.yandex.net/api/v1/tr.json/translate'
+    # Official Cloud Translate API v2 — used only when YANDEX_API_KEY is set.
+    _YANDEX_CLOUD_URL: str = 'https://translate.api.cloud.yandex.net/translate/v2/translate'
 
     def translate(self, text: str, target_lang: str, source_lang: str = 'auto') -> str:
         """Return *text* translated into *target_lang*.
@@ -714,9 +718,10 @@ class Translator:
         - If source or target is in *_YANDEX_LANGUAGES*, use Yandex directly.
         - Otherwise try Google; on ``LanguageNotSupportedException`` fall back to Yandex.
 
-        Raises :class:`RuntimeError` when deep-translator is not available and no Yandex
-        API key is configured, :class:`ValueError` for an unsupported language, and any
-        exception propagated from the underlying API call.
+        Yandex translation uses the free widget endpoint by default (no API key required).
+        Set ``YANDEX_API_KEY`` in the environment to use the official Cloud API instead.
+        Raises :class:`ValueError` for an unsupported language, and any exception
+        propagated from the underlying API call.
         """
         use_yandex = (
             source_lang in self._YANDEX_LANGUAGES
@@ -750,16 +755,45 @@ class Translator:
         return t.translate(text) or ''
 
     def _translate_yandex(self, text: str, target_lang: str, source_lang: str) -> str:
-        """Translate a single chunk via Yandex Cloud Translate API v2.
+        """Translate a single chunk via Yandex Translate.
 
-        Requires ``YANDEX_API_KEY`` to be set in the environment.
-        Raises :class:`RuntimeError` when the API key is missing or the request fails.
+        Uses the free widget endpoint by default (no API key required).
+        If ``YANDEX_API_KEY`` is configured, the official Cloud Translate API v2
+        is used instead for higher reliability and rate limits.
+        Raises :class:`RuntimeError` when the request fails.
         """
-        if not YANDEX_API_KEY:
-            raise RuntimeError(
-                'YANDEX_API_KEY не задан. Задайте переменную окружения YANDEX_API_KEY '
-                'для поддержки осетинского и других языков, не поддерживаемых Google.'
+        if YANDEX_API_KEY:
+            return self._translate_yandex_cloud(text, target_lang, source_lang)
+        return self._translate_yandex_free(text, target_lang, source_lang)
+
+    def _translate_yandex_free(self, text: str, target_lang: str, source_lang: str) -> str:
+        """Translate via the free Yandex widget endpoint (no API key needed)."""
+        lang = (
+            f'{source_lang}-{target_lang}'
+            if source_lang and source_lang != 'auto'
+            else target_lang
+        )
+        params = {
+            'id': uuid.uuid4().hex + '-0-0',
+            'srv': 'yabrowser',
+            'lang': lang,
+            'text': text,
+        }
+        try:
+            response = requests.get(
+                self._YANDEX_FREE_URL, params=params, timeout=15
             )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f'Yandex Translate запрос не удался: {exc}') from exc
+        data = response.json()
+        texts = data.get('text', [])
+        if not texts:
+            raise RuntimeError('Yandex Translate вернул пустой результат')
+        return texts[0]
+
+    def _translate_yandex_cloud(self, text: str, target_lang: str, source_lang: str) -> str:
+        """Translate via the official Yandex Cloud Translate API v2 (requires YANDEX_API_KEY)."""
         headers = {
             'Authorization': f'Api-Key {YANDEX_API_KEY}',
             'Content-Type': 'application/json',
@@ -769,18 +803,18 @@ class Translator:
             body['sourceLanguageCode'] = source_lang
         try:
             response = requests.post(
-                self._YANDEX_API_URL, headers=headers, json=body, timeout=15
+                self._YANDEX_CLOUD_URL, headers=headers, json=body, timeout=15
             )
             response.raise_for_status()
         except requests.RequestException as exc:
-            raise RuntimeError(f'Yandex Translate запрос не удался: {exc}') from exc
+            raise RuntimeError(f'Yandex Cloud Translate запрос не удался: {exc}') from exc
         data = response.json()
         translations = data.get('translations', [])
         if not translations:
-            raise RuntimeError('Yandex Translate вернул пустой результат')
+            raise RuntimeError('Yandex Cloud Translate вернул пустой результат')
         translated_text = translations[0].get('text')
         if translated_text is None:
-            raise RuntimeError('Yandex Translate не вернул текст перевода')
+            raise RuntimeError('Yandex Cloud Translate не вернул текст перевода')
         return translated_text
 
     def get_supported_languages(self) -> dict[str, str]:
