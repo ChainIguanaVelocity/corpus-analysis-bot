@@ -470,6 +470,97 @@ class TextAnalyzer:
         )
         return lemmas
 
+    def get_morphological_info(self, word: str) -> list[dict]:
+        """Return full morphological data for *word* from UniParser.
+
+        Each element in the returned list represents one analysis variant
+        (to cover homonyms) and contains:
+          - ``word``     – the original word form queried
+          - ``lemma``    – base (dictionary) form
+          - ``pos``      – part of speech (first tag in the gramm string)
+          - ``gramm``    – full grammatical tag string as returned by UniParser
+          - ``features`` – list of individual grammatical features (remaining tags)
+
+        Returns an empty list when UniParser is unavailable or the word is unknown.
+        """
+        if self._uniparser is None:
+            logger.info('[Analyzer] Морфоанализ недоступен (uniparser не загружен): %s', word)
+            return []
+        try:
+            analyses = self._uniparser.analyze_words(word)
+        except Exception:  # noqa: BLE001
+            logger.warning('[Analyzer] Ошибка морфоанализа слова "%s"', word)
+            return []
+
+        results = []
+        for analysis in analyses:
+            lemma = getattr(analysis, 'lemma', '') or ''
+            gramm = getattr(analysis, 'gramm', '') or ''
+            tags = [t.strip() for t in gramm.split(',') if t.strip()]
+            pos = tags[0] if tags else ''
+            features = tags[1:] if len(tags) > 1 else []
+            results.append({
+                'word': word,
+                'lemma': lemma.lower(),
+                'pos': pos,
+                'gramm': gramm,
+                'features': features,
+            })
+        logger.info(
+            '[Analyzer] Морфоанализ "%s": %d вариантов, POS=%s',
+            word, len(results), results[0]['pos'] if results else '—',
+        )
+        return results
+
+    def get_pos_distribution(self, text: str) -> dict[str, int]:
+        """Return a POS-tag frequency distribution for all tokens in *text*.
+
+        Tokenises *text*, analyses each token with UniParser, and counts the
+        first (part-of-speech) tag.  Tokens that can't be analysed are counted
+        under the key ``'?'``.
+
+        Returns an empty dict when UniParser is unavailable.
+        """
+        if self._uniparser is None:
+            logger.info('[Analyzer] POS-распределение недоступно (uniparser не загружен)')
+            return {}
+
+        tokens = self.tokenize(text)
+        pos_counter: Counter = Counter()
+        for token in tokens:
+            info_list = self.get_morphological_info(token)
+            pos = (info_list[0]['pos'] or '?') if info_list else '?'
+            pos_counter[pos] += 1
+        logger.info(
+            '[Analyzer] POS-распределение: %d токенов, %d категорий',
+            len(tokens), len(pos_counter),
+        )
+        return dict(pos_counter.most_common())
+
+    def get_gramm_distribution(self, text: str) -> dict[str, int]:
+        """Return a frequency distribution of full grammatical tag strings in *text*.
+
+        Like :meth:`get_pos_distribution` but counts the complete gramm string
+        (e.g. ``"N,m,sg,gen"`` rather than just ``"N"``).
+
+        Returns an empty dict when UniParser is unavailable.
+        """
+        if self._uniparser is None:
+            logger.info('[Analyzer] Gramm-распределение недоступно (uniparser не загружен)')
+            return {}
+
+        tokens = self.tokenize(text)
+        gramm_counter: Counter = Counter()
+        for token in tokens:
+            info_list = self.get_morphological_info(token)
+            gramm = (info_list[0]['gramm'] or '?') if info_list else '?'
+            gramm_counter[gramm] += 1
+        logger.info(
+            '[Analyzer] Gramm-распределение: %d токенов, %d уникальных форм',
+            len(tokens), len(gramm_counter),
+        )
+        return dict(gramm_counter.most_common())
+
     def remove_stopwords(self, tokens):
         cleaned = [token for token in tokens if token not in self.stop_words]
         logger.info('[Analyzer] Удаление стоп-слов: %d → %d токенов', len(tokens), len(cleaned))
@@ -677,6 +768,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('📥 Импорт'),
         telebot.types.KeyboardButton('🔄 Автосбор'),
         telebot.types.KeyboardButton('🔎 Поиск'),
+        telebot.types.KeyboardButton('🔬 Морфо'),
     )
 
     bot.reply_to(
@@ -698,7 +790,10 @@ def start(message: telebot.types.Message) -> None:
         '  /load [название] — найти произведение по названию и получить текст целиком\n'
         '  /import\\_texts — импортировать .txt файлы из папки texts/\n'
         '  /collect — включить/выключить автосбор текстовых сообщений\n'
-        '  /search <слово> — найти предложения с нужным словом в корпусе',
+        '  /search <слово> — найти предложения с нужным словом в корпусе\n'
+        '  /morph <слово> — морфологический анализ слова\n'
+        '  /morph\\_stats — статистика частей речи в корпусе\n'
+        '  /morph\\_freq — частота грамматических форм в корпусе',
         parse_mode='Markdown',
         reply_markup=markup,
     )
@@ -1060,6 +1155,145 @@ def search_word(message: telebot.types.Message) -> None:
     _do_search(message, word)
 
 
+# ---------------------------------------------------------------------------
+# Morphological analysis helpers and command handlers
+# ---------------------------------------------------------------------------
+
+def _do_morph(message: telebot.types.Message, word: str) -> None:
+    """Core morphological analysis logic shared by /morph and the '🔬 Морфо' button."""
+    user_id = message.from_user.id
+    logger.info('[/morph] Морфоанализ слова "%s" для user_id=%s', word, user_id)
+
+    if analyzer._uniparser is None:
+        bot.reply_to(
+            message,
+            '⚠️ Морфологический анализ недоступен: uniparser-ossetic не установлен.',
+        )
+        return
+
+    info_list = analyzer.get_morphological_info(word)
+    if not info_list:
+        bot.reply_to(
+            message,
+            f'🔬 Слово *{_escape_markdown(word)}* не распознано морфологическим анализатором.',
+            parse_mode='Markdown',
+        )
+        return
+
+    lines = [f'🔬 *Морфологический анализ:* {_escape_markdown(word)}\n']
+    for i, info in enumerate(info_list, 1):
+        if len(info_list) > 1:
+            lines.append(f'*Вариант {i}:*')
+        lines.append(f'  Лемма: {_escape_markdown(info["lemma"])}')
+        lines.append(f'  Часть речи: {_escape_markdown(info["pos"])}')
+        if info['features']:
+            lines.append(f'  Признаки: {_escape_markdown(", ".join(info["features"]))}')
+        lines.append(f'  Граммемы: {_escape_markdown(info["gramm"])}')
+        if i < len(info_list):
+            lines.append('')
+    logger.info('[/morph] Результат морфоанализа отправлен user_id=%s', user_id)
+    bot.reply_to(message, '\n'.join(lines), parse_mode='Markdown')
+
+
+def _receive_morph_word(message: telebot.types.Message) -> None:
+    """Next-step handler: receives the word to morphologically analyse."""
+    word = unicodedata.normalize('NFC', (message.text or '').strip())
+    if not word or word.startswith('/'):
+        logger.info('[Button/🔬] Пустой ввод от user_id=%s, морфоанализ отменён',
+                    message.from_user.id)
+        bot.reply_to(message, '❌ Слово не введено. Морфоанализ отменён.')
+        return
+    logger.info('[Button/🔬] Морфоанализ "%s" для user_id=%s (next-step)',
+                word, message.from_user.id)
+    _do_morph(message, word)
+
+
+@bot.message_handler(commands=['morph'])
+def morph(message: telebot.types.Message) -> None:
+    """/morph <word> — morphological analysis of a single word."""
+    logger.info('[/morph] user_id=%s', message.from_user.id)
+    parts = message.text.split(maxsplit=1)
+    word = parts[1].strip() if len(parts) > 1 else ''
+    if not word:
+        bot.reply_to(message,
+                     '🔬 Укажите слово для морфологического анализа. Пример: /morph слово')
+        return
+    _do_morph(message, word)
+
+
+@bot.message_handler(commands=['morph_stats'])
+def morph_stats(message: telebot.types.Message) -> None:
+    """/morph_stats — POS distribution statistics for the shared corpus."""
+    logger.info('[/morph_stats] user_id=%s', message.from_user.id)
+
+    if analyzer._uniparser is None:
+        bot.reply_to(
+            message,
+            '⚠️ Морфологический анализ недоступен: uniparser-ossetic не установлен.',
+        )
+        return
+
+    text = _get_user_corpus_text(message)
+    if text is None:
+        return
+
+    user_id = message.from_user.id
+    logger.info('[/morph_stats] Анализ POS-распределения корпуса (%d симв.) для user_id=%s',
+                len(text), user_id)
+    pos_dist = analyzer.get_pos_distribution(text)
+    if not pos_dist:
+        bot.reply_to(message, '📊 Нет данных для морфологической статистики.')
+        return
+
+    total = sum(pos_dist.values())
+    top_pos = list(pos_dist.items())[:15]
+    lines = ['📊 *Статистика частей речи в корпусе*\n']
+    for pos, count in top_pos:
+        pct = count / total * 100
+        pos_label = _escape_markdown(pos if pos else '?')
+        lines.append(f'  {pos_label}: {count} ({pct:.1f}%)')
+    lines.append(f'\n_Всего токенов проанализировано: {total}_')
+    logger.info('[/morph_stats] POS-статистика отправлена user_id=%s (%d категорий)',
+                user_id, len(pos_dist))
+    bot.reply_to(message, '\n'.join(lines), parse_mode='Markdown')
+
+
+@bot.message_handler(commands=['morph_freq'])
+def morph_freq(message: telebot.types.Message) -> None:
+    """/morph_freq — frequency distribution of grammatical forms in the shared corpus."""
+    logger.info('[/morph_freq] user_id=%s', message.from_user.id)
+
+    if analyzer._uniparser is None:
+        bot.reply_to(
+            message,
+            '⚠️ Морфологический анализ недоступен: uniparser-ossetic не установлен.',
+        )
+        return
+
+    text = _get_user_corpus_text(message)
+    if text is None:
+        return
+
+    user_id = message.from_user.id
+    logger.info('[/morph_freq] Анализ gramm-распределения корпуса (%d симв.) для user_id=%s',
+                len(text), user_id)
+    gramm_dist = analyzer.get_gramm_distribution(text)
+    if not gramm_dist:
+        bot.reply_to(message, '📊 Нет данных для анализа грамматических форм.')
+        return
+
+    top_forms = list(gramm_dist.items())[:20]
+    total = sum(gramm_dist.values())
+    lines = ['📊 *Частота грамматических форм в корпусе* (топ 20)\n']
+    for gramm, count in top_forms:
+        pct = count / total * 100
+        lines.append(f'  {_escape_markdown(gramm)}: {count} ({pct:.1f}%)')
+    lines.append(f'\n_Всего токенов: {total}, уникальных форм: {len(gramm_dist)}_')
+    logger.info('[/morph_freq] Грамматические формы отправлены user_id=%s (%d форм)',
+                user_id, len(gramm_dist))
+    bot.reply_to(message, '\n'.join(lines), parse_mode='Markdown')
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srch:'))
 def search_open_text_menu(call: telebot.types.CallbackQuery) -> None:
     """Show work title and viewing options when the user taps 'Open text'."""
@@ -1389,6 +1623,14 @@ def button_search(message: telebot.types.Message) -> None:
     bot.register_next_step_handler(sent, _receive_search_word)
 
 
+@bot.message_handler(func=lambda m: m.text == '🔬 Морфо')
+def button_morph(message: telebot.types.Message) -> None:
+    """Handle '🔬 Морфо' button – prompt for a word, then run morphological analysis."""
+    logger.info('[Button/🔬] user_id=%s', message.from_user.id)
+    sent = bot.send_message(message.chat.id, '🔬 Введите слово для морфологического анализа:')
+    bot.register_next_step_handler(sent, _receive_morph_word)
+
+
 @bot.message_handler(func=lambda m: m.text == '📥 Импорт')
 def button_import(message: telebot.types.Message) -> None:
     """Handle '📥 Импорт' button – import .txt files from the texts/ directory (owner only)."""
@@ -1523,6 +1765,9 @@ def _register_commands() -> None:
         telebot.types.BotCommand('import_texts', 'Импортировать .txt файлы из папки texts/'),
         telebot.types.BotCommand('collect',      'Включить/выключить автосбор текстовых сообщений'),
         telebot.types.BotCommand('search',       'Поиск слова в корпусе с примерами предложений'),
+        telebot.types.BotCommand('morph',        'Морфологический анализ слова'),
+        telebot.types.BotCommand('morph_stats',  'Статистика частей речи в корпусе'),
+        telebot.types.BotCommand('morph_freq',   'Частота грамматических форм в корпусе'),
     ]
     bot.set_my_commands(commands)
     logger.info('Команды меню зарегистрированы (%d команд)', len(commands))
