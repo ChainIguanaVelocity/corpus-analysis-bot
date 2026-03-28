@@ -10,6 +10,8 @@ import unicodedata
 from collections import Counter
 from sqlite3 import Error
 
+import requests
+
 import telebot
 from dotenv import load_dotenv
 from wordcloud import WordCloud
@@ -22,16 +24,19 @@ except ImportError:
 
 try:
     from deep_translator import GoogleTranslator as _GoogleTranslator
+    from deep_translator.exceptions import LanguageNotSupportedException as _LangNotSupported
     _DEEP_TRANSLATOR_AVAILABLE = True
 except ImportError:
     _DEEP_TRANSLATOR_AVAILABLE = False
+    _LangNotSupported = Exception  # type: ignore[assignment,misc]
 
 # ---------------------------------------------------------------------------
 # Configuration  (previously config.py)
 # ---------------------------------------------------------------------------
 load_dotenv()
 
-TELEGRAM_TOKEN = "7655484821:AAH-V6qCSQsKi216uIEMe1hw08mhq4erIx0"
+TELEGRAM_TOKEN: str = os.getenv('TELEGRAM_TOKEN', '')
+YANDEX_API_KEY: str = os.getenv('YANDEX_API_KEY', '')
 DB_FILE: str = os.getenv('DB_FILE', 'corpus_analysis.sqlite3')
 LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
 MAX_TEXT_LENGTH: int = int(os.getenv('MAX_TEXT_LENGTH', '10000'))
@@ -690,32 +695,93 @@ class DataVisualizer:
 # ---------------------------------------------------------------------------
 
 class Translator:
-    """Translate text using Google Translate (via deep-translator).
+    """Translate text using Google Translate (via deep-translator) with Yandex as fallback.
 
     Falls back gracefully when the *deep-translator* library is not installed.
+    Languages unsupported by Google (e.g. Ossetian) are routed to Yandex Translate API v2.
     Long texts are automatically split into chunks to stay within the API limit.
     """
 
     _CHUNK_SIZE = 4500  # safe margin below the 5000-char Google Translate limit
+    # Languages that Google Translate does not support — route directly to Yandex.
+    _YANDEX_LANGUAGES: frozenset[str] = frozenset({'os'})
+    _YANDEX_API_URL: str = 'https://translate.api.cloud.yandex.net/translate/v2/translate'
 
     def translate(self, text: str, target_lang: str, source_lang: str = 'auto') -> str:
         """Return *text* translated into *target_lang*.
 
-        Raises :class:`RuntimeError` when deep-translator is not available,
-        :class:`ValueError` for an unsupported language, and any exception
-        propagated from the underlying API call.
+        Routing logic:
+        - If source or target is in *_YANDEX_LANGUAGES*, use Yandex directly.
+        - Otherwise try Google; on ``LanguageNotSupportedException`` fall back to Yandex.
+
+        Raises :class:`RuntimeError` when deep-translator is not available and no Yandex
+        API key is configured, :class:`ValueError` for an unsupported language, and any
+        exception propagated from the underlying API call.
         """
-        if not _DEEP_TRANSLATOR_AVAILABLE:
-            raise RuntimeError('deep-translator не установлен')
+        use_yandex = (
+            source_lang in self._YANDEX_LANGUAGES
+            or target_lang in self._YANDEX_LANGUAGES
+        )
         logger.info('[Translator] Перевод текста (%d симв.) на "%s"', len(text), target_lang)
         chunks = self._split_text(text)
-        translated_chunks: list[str] = []
-        t = _GoogleTranslator(source=source_lang, target=target_lang)
-        for chunk in chunks:
-            translated_chunks.append(t.translate(chunk) or '')
+        if use_yandex:
+            translated_chunks = [self._translate_yandex(chunk, target_lang, source_lang)
+                                  for chunk in chunks]
+        else:
+            if not _DEEP_TRANSLATOR_AVAILABLE:
+                raise RuntimeError('deep-translator не установлен')
+            try:
+                translated_chunks = [self._translate_google(chunk, target_lang, source_lang)
+                                     for chunk in chunks]
+            except _LangNotSupported:
+                logger.warning(
+                    '[Translator] Google не поддерживает язык "%s", переключаемся на Yandex',
+                    target_lang,
+                )
+                translated_chunks = [self._translate_yandex(chunk, target_lang, source_lang)
+                                     for chunk in chunks]
         result = '\n'.join(translated_chunks)
         logger.info('[Translator] Перевод завершён (%d симв.)', len(result))
         return result
+
+    def _translate_google(self, text: str, target_lang: str, source_lang: str) -> str:
+        """Translate a single chunk via Google Translate (deep-translator)."""
+        t = _GoogleTranslator(source=source_lang, target=target_lang)
+        return t.translate(text) or ''
+
+    def _translate_yandex(self, text: str, target_lang: str, source_lang: str) -> str:
+        """Translate a single chunk via Yandex Cloud Translate API v2.
+
+        Requires ``YANDEX_API_KEY`` to be set in the environment.
+        Raises :class:`RuntimeError` when the API key is missing or the request fails.
+        """
+        if not YANDEX_API_KEY:
+            raise RuntimeError(
+                'YANDEX_API_KEY не задан. Задайте переменную окружения YANDEX_API_KEY '
+                'для поддержки осетинского и других языков, не поддерживаемых Google.'
+            )
+        headers = {
+            'Authorization': f'Api-Key {YANDEX_API_KEY}',
+            'Content-Type': 'application/json',
+        }
+        body: dict = {'texts': [text], 'targetLanguageCode': target_lang}
+        if source_lang and source_lang != 'auto':
+            body['sourceLanguageCode'] = source_lang
+        try:
+            response = requests.post(
+                self._YANDEX_API_URL, headers=headers, json=body, timeout=15
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f'Yandex Translate запрос не удался: {exc}') from exc
+        data = response.json()
+        translations = data.get('translations', [])
+        if not translations:
+            raise RuntimeError('Yandex Translate вернул пустой результат')
+        translated_text = translations[0].get('text')
+        if translated_text is None:
+            raise RuntimeError('Yandex Translate не вернул текст перевода')
+        return translated_text
 
     def get_supported_languages(self) -> dict[str, str]:
         """Return a dict mapping language name to language code."""
@@ -752,6 +818,8 @@ db = Database(DB_FILE)
 analyzer = TextAnalyzer()
 vis = DataVisualizer()
 translator = Translator()
+if not TELEGRAM_TOKEN:
+    logger.warning('TELEGRAM_TOKEN не задан — бот не сможет подключиться к Telegram.')
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # ---------------------------------------------------------------------------
