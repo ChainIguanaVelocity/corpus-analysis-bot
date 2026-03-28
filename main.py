@@ -1823,11 +1823,37 @@ def button_toggle_collect(message: telebot.types.Message) -> None:
 # Translation helpers and command handlers
 # ---------------------------------------------------------------------------
 
-def _do_translate(message: telebot.types.Message, target_lang: str) -> None:
-    """Core translation logic: translate the shared corpus into *target_lang*."""
+# Callback data constants for translation direction selection.
+_TRANS_CB_OS_RU = 'trans:os_ru'
+_TRANS_CB_RU_OS = 'trans:ru_os'
+
+
+def _send_translate_direction_keyboard(chat_id: int) -> None:
+    """Send an inline keyboard asking the user to choose a translation direction."""
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.row(
+        telebot.types.InlineKeyboardButton(
+            '✨ Осетинский → Русский', callback_data=_TRANS_CB_OS_RU,
+        ),
+        telebot.types.InlineKeyboardButton(
+            '✨ Русский → Осетинский', callback_data=_TRANS_CB_RU_OS,
+        ),
+    )
+    bot.send_message(chat_id, '🌐 Выберите направление перевода:', reply_markup=markup)
+
+
+def _receive_translate_text(message: telebot.types.Message, source_lang: str,
+                             target_lang: str) -> None:
+    """Next-step handler: receives the text to translate and sends the result."""
     user_id = message.from_user.id
     chat_id = message.chat.id
-    logger.info('[/translate] Перевод корпуса на "%s" для user_id=%s', target_lang, user_id)
+    text = (message.text or '').strip()
+
+    if not text or text.startswith('/'):
+        logger.info('[Translator] Пустой или командный ввод от user_id=%s, перевод отменён',
+                    user_id)
+        bot.reply_to(message, '❌ Текст не введён. Перевод отменён.')
+        return
 
     if not _DEEP_TRANSLATOR_AVAILABLE:
         bot.send_message(
@@ -1837,56 +1863,35 @@ def _do_translate(message: telebot.types.Message, target_lang: str) -> None:
         )
         return
 
-    combined = _get_user_corpus_text(message)
-    if combined is None:
-        return
-
-    # Validate / normalise the target language via supported list.
-    supported = translator.get_supported_languages()  # {name: code}
-    lang_lower = target_lang.strip().lower()
-    # Accept both full name and ISO code.
-    if lang_lower in supported:
-        resolved_lang = supported[lang_lower]
-    elif lang_lower in supported.values():
-        resolved_lang = lang_lower
-    else:
-        # Try partial name match.
-        matches = [code for name, code in supported.items() if lang_lower in name]
-        if len(matches) == 1:
-            resolved_lang = matches[0]
-        else:
-            bot.send_message(
-                chat_id,
-                f'❌ Язык *{_escape_markdown(target_lang)}* не поддерживается.\n'
-                'Укажите язык на английском, например: `russian`, `english`, `french`, `german`.',
-                parse_mode='Markdown',
-            )
-            return
-
-    bot.send_message(chat_id, f'🌐 Переводю корпус на *{_escape_markdown(target_lang)}*…',
-                     parse_mode='Markdown')
+    logger.info('[Translator] Перевод текста (%d симв.) %s→%s для user_id=%s',
+                len(text), source_lang, target_lang, user_id)
 
     try:
-        translated = translator.translate(combined, target_lang=resolved_lang)
+        translated = translator.translate(text, target_lang=target_lang, source_lang=source_lang)
     except Exception as exc:  # noqa: BLE001
-        logger.error('[/translate] Ошибка перевода для user_id=%s: %s', user_id, exc)
+        logger.error('[Translator] Ошибка перевода для user_id=%s: %s', user_id, exc)
         bot.send_message(
             chat_id,
-            '❌ Не удалось выполнить перевод. Проверьте название языка и повторите попытку.',
-            parse_mode='Markdown',
+            '❌ Не удалось выполнить перевод. Попробуйте ещё раз.',
         )
         return
 
-    # Persist translation to database (attributed to the requester).
+    # Persist translation to database.
     db.save_translation(
         user_id=user_id,
-        source_lang='auto',
-        target_lang=resolved_lang,
-        original_text=combined,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        original_text=text,
         translated_text=translated,
     )
 
-    header = f'🌐 *Перевод корпуса* (→ {_escape_markdown(target_lang)}):\n\n'
+    if source_lang == 'os' and target_lang == 'ru':
+        direction_label = 'ос → рус'
+    elif source_lang == 'ru' and target_lang == 'os':
+        direction_label = 'рус → ос'
+    else:
+        direction_label = f'{source_lang} → {target_lang}'
+    header = f'🌐 *Перевод* ({direction_label}):\n\n'
     full_reply = header + translated
     if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
         bot.send_message(chat_id, full_reply, parse_mode='Markdown')
@@ -1894,51 +1899,36 @@ def _do_translate(message: telebot.types.Message, target_lang: str) -> None:
         bot.send_message(chat_id, header, parse_mode='Markdown')
         for i in range(0, len(translated), TELEGRAM_MAX_MESSAGE_LEN):
             bot.send_message(chat_id, translated[i:i + TELEGRAM_MAX_MESSAGE_LEN])
-    logger.info('[/translate] Перевод отправлен user_id=%s', user_id)
+    logger.info('[Translator] Перевод отправлен user_id=%s', user_id)
 
 
-def _receive_translate_lang(message: telebot.types.Message) -> None:
-    """Next-step handler: receives the target language entered by the user."""
-    target_lang = (message.text or '').strip()
-    if not target_lang or target_lang.startswith('/'):
-        logger.info('[Button/🌐] Пустой или командный ввод от user_id=%s, перевод отменён',
-                    message.from_user.id)
-        bot.reply_to(message, '❌ Язык не введён. Перевод отменён.')
-        return
-    logger.info('[Button/🌐] Перевод на "%s" для user_id=%s (next-step)',
-                target_lang, message.from_user.id)
-    _do_translate(message, target_lang)
+@bot.callback_query_handler(func=lambda call: call.data in (_TRANS_CB_OS_RU, _TRANS_CB_RU_OS))
+def callback_translate_direction(call: telebot.types.CallbackQuery) -> None:
+    """Handle translation direction selection from inline keyboard."""
+    bot.answer_callback_query(call.id)
+    if call.data == _TRANS_CB_OS_RU:
+        source_lang, target_lang = 'os', 'ru'
+    else:
+        source_lang, target_lang = 'ru', 'os'
+
+    sent = bot.send_message(call.message.chat.id, '✏️ Введите текст для перевода:')
+    bot.register_next_step_handler(
+        sent, _receive_translate_text, source_lang, target_lang,
+    )
 
 
 @bot.message_handler(commands=['translate'])
 def translate_corpus(message: telebot.types.Message) -> None:
-    """/translate [language] — translate the shared corpus into the target language."""
+    """/translate — choose translation direction (Ossetian ↔ Russian)."""
     logger.info('[/translate] user_id=%s', message.from_user.id)
-    parts = message.text.split(maxsplit=1)
-    target_lang = parts[1].strip() if len(parts) > 1 else ''
-
-    if not target_lang:
-        sent = bot.reply_to(
-            message,
-            '🌐 Укажите язык перевода (например: `russian`, `english`, `french`).',
-            parse_mode='Markdown',
-        )
-        bot.register_next_step_handler(sent, _receive_translate_lang)
-        return
-
-    _do_translate(message, target_lang)
+    _send_translate_direction_keyboard(message.chat.id)
 
 
 @bot.message_handler(func=lambda m: m.text == '🌐 Переводчик')
 def button_translate(message: telebot.types.Message) -> None:
-    """Handle '🌐 Переводчик' button – prompt for target language, then translate."""
+    """Handle '🌐 Переводчик' button – show translation direction selection."""
     logger.info('[Button/🌐] user_id=%s', message.from_user.id)
-    sent = bot.send_message(
-        message.chat.id,
-        '🌐 Введите язык перевода (например: `russian`, `english`, `french`).',
-        parse_mode='Markdown',
-    )
-    bot.register_next_step_handler(sent, _receive_translate_lang)
+    _send_translate_direction_keyboard(message.chat.id)
 
 
 @bot.message_handler(content_types=['text'])
