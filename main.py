@@ -519,6 +519,11 @@ def _escape_markdown(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+=|{}.!-])', r'\\\1', text)
 
 
+def _is_owner(message: telebot.types.Message) -> bool:
+    """Return True if the message was sent by the corpus owner."""
+    return message.from_user.id == SHARED_CORPUS_USER_ID
+
+
 def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     """Fire after COLLECT_WINDOW seconds of inactivity for a user.
 
@@ -1155,8 +1160,12 @@ def search_show_full_text(call: telebot.types.CallbackQuery) -> None:
 
 @bot.message_handler(commands=['import_texts'])
 def import_texts(message: telebot.types.Message) -> None:
-    """/import_texts — import all .txt files from the texts/ folder into the shared corpus."""
+    """/import_texts — import all .txt files from the texts/ folder into the shared corpus (owner only)."""
     logger.info('[/import_texts] user_id=%s', message.from_user.id)
+    if not _is_owner(message):
+        logger.info('[/import_texts] Отказ: user_id=%s не является владельцем корпуса', message.from_user.id)
+        bot.reply_to(message, '❌ Только владелец корпуса может импортировать тексты.')
+        return
 
     texts_dir = TEXTS_DIR
     result = db.import_texts_from_directory(SHARED_CORPUS_USER_ID, texts_dir, analyzer=analyzer)
@@ -1321,8 +1330,12 @@ def button_search(message: telebot.types.Message) -> None:
 
 @bot.message_handler(func=lambda m: m.text == '📥 Импорт')
 def button_import(message: telebot.types.Message) -> None:
-    """Handle '📥 Импорт' button – import .txt files from the texts/ directory."""
+    """Handle '📥 Импорт' button – import .txt files from the texts/ directory (owner only)."""
     logger.info('[Button/📥] user_id=%s', message.from_user.id)
+    if not _is_owner(message):
+        logger.info('[Button/📥] Отказ: user_id=%s не является владельцем корпуса', message.from_user.id)
+        bot.reply_to(message, '❌ Только владелец корпуса может импортировать тексты.')
+        return
     texts_dir = TEXTS_DIR
     result = db.import_texts_from_directory(SHARED_CORPUS_USER_ID, texts_dir, analyzer=analyzer)
     if 'error' in result:
@@ -1345,7 +1358,11 @@ def button_import(message: telebot.types.Message) -> None:
 
 @bot.message_handler(commands=['collect'])
 def toggle_collect(message: telebot.types.Message) -> None:
-    """/collect — toggle auto-collect mode on/off for the current user."""
+    """/collect — toggle auto-collect mode on/off (owner only)."""
+    if not _is_owner(message):
+        logger.info('[/collect] Отказ: user_id=%s не является владельцем корпуса', message.from_user.id)
+        bot.reply_to(message, '❌ Только владелец корпуса может управлять автосбором.')
+        return
     user_id = message.from_user.id
     if user_id in _auto_collect_enabled:
         _auto_collect_enabled.discard(user_id)
@@ -1389,6 +1406,11 @@ def add_to_corpus(message: telebot.types.Message) -> None:
         return
     text = message.text.strip()
     if not text:
+        return
+
+    # Only the corpus owner may add texts.
+    if not _is_owner(message):
+        logger.debug('[Buffer] user_id=%s не является владельцем, сообщение проигнорировано', message.from_user.id)
         return
 
     user_id = message.from_user.id
