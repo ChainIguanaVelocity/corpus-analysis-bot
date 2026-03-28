@@ -20,6 +20,12 @@ try:
 except ImportError:
     _UNIPARSER_AVAILABLE = False
 
+try:
+    from deep_translator import GoogleTranslator as _GoogleTranslator
+    _DEEP_TRANSLATOR_AVAILABLE = True
+except ImportError:
+    _DEEP_TRANSLATOR_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Configuration  (previously config.py)
 # ---------------------------------------------------------------------------
@@ -116,6 +122,17 @@ class Database:
                 name TEXT NOT NULL,
                 combined_text TEXT NOT NULL,
                 analysis_result TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS translations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_lang TEXT NOT NULL,
+                target_lang TEXT NOT NULL,
+                original_text TEXT NOT NULL,
+                translated_text TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         )
@@ -311,6 +328,50 @@ class Database:
         except Error as e:
             logger.error('[DB] save_named_analysis error: %s', e)
             return None
+
+    def save_translation(self, user_id: int, source_lang: str, target_lang: str,
+                         original_text: str, translated_text: str) -> int | None:
+        """Persist a translation record. Returns the new row id."""
+        logger.info('[DB] Сохранение перевода для user_id=%s (%s → %s)', user_id, source_lang, target_lang)
+        sql = (
+            'INSERT INTO translations(user_id, source_lang, target_lang, original_text, translated_text) '
+            'VALUES(?, ?, ?, ?, ?)'
+        )
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, (user_id, source_lang, target_lang, original_text, translated_text))
+            self.conn.commit()
+            logger.info('[DB] Перевод сохранён, row_id=%s', cur.lastrowid)
+            return cur.lastrowid
+        except Error as e:
+            logger.error('[DB] save_translation error: %s', e)
+            return None
+
+    def get_translations(self, user_id: int) -> list[dict]:
+        """Return all translations for *user_id*, most recent first."""
+        logger.info('[DB] Запрос переводов для user_id=%s', user_id)
+        sql = (
+            'SELECT source_lang, target_lang, original_text, translated_text, created_at '
+            'FROM translations WHERE user_id = ? ORDER BY id DESC'
+        )
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, (user_id,))
+            rows = cur.fetchall()
+            logger.info('[DB] Найдено %d переводов для user_id=%s', len(rows), user_id)
+            return [
+                {
+                    'source_lang': row[0],
+                    'target_lang': row[1],
+                    'original_text': row[2],
+                    'translated_text': row[3],
+                    'created_at': row[4],
+                }
+                for row in rows
+            ]
+        except Error as e:
+            logger.error('[DB] get_translations error: %s', e)
+            return []
 
     def import_texts_from_directory(self, user_id: int, texts_dir: str = 'texts',
                                     analyzer=None) -> dict:
@@ -625,11 +686,72 @@ class DataVisualizer:
         return tmp.name
 
 # ---------------------------------------------------------------------------
+# Translator  (machine translation via deep-translator / Google Translate)
+# ---------------------------------------------------------------------------
+
+class Translator:
+    """Translate text using Google Translate (via deep-translator).
+
+    Falls back gracefully when the *deep-translator* library is not installed.
+    Long texts are automatically split into chunks to stay within the API limit.
+    """
+
+    _CHUNK_SIZE = 4500  # safe margin below the 5000-char Google Translate limit
+
+    def translate(self, text: str, target_lang: str, source_lang: str = 'auto') -> str:
+        """Return *text* translated into *target_lang*.
+
+        Raises :class:`RuntimeError` when deep-translator is not available,
+        :class:`ValueError` for an unsupported language, and any exception
+        propagated from the underlying API call.
+        """
+        if not _DEEP_TRANSLATOR_AVAILABLE:
+            raise RuntimeError('deep-translator не установлен')
+        logger.info('[Translator] Перевод текста (%d симв.) на "%s"', len(text), target_lang)
+        chunks = self._split_text(text)
+        translated_chunks: list[str] = []
+        t = _GoogleTranslator(source=source_lang, target=target_lang)
+        for chunk in chunks:
+            translated_chunks.append(t.translate(chunk) or '')
+        result = '\n'.join(translated_chunks)
+        logger.info('[Translator] Перевод завершён (%d симв.)', len(result))
+        return result
+
+    def get_supported_languages(self) -> dict[str, str]:
+        """Return a dict mapping language name to language code."""
+        if not _DEEP_TRANSLATOR_AVAILABLE:
+            return {}
+        return _GoogleTranslator().get_supported_languages(as_dict=True)  # type: ignore[return-value]
+
+    def _split_text(self, text: str) -> list[str]:
+        """Split *text* into chunks of at most _CHUNK_SIZE characters,
+        preferring paragraph or sentence boundaries."""
+        if len(text) <= self._CHUNK_SIZE:
+            return [text]
+        chunks: list[str] = []
+        while text:
+            if len(text) <= self._CHUNK_SIZE:
+                chunks.append(text)
+                break
+            # Try to split at a paragraph boundary first, then sentence.
+            split_at = text.rfind('\n\n', 0, self._CHUNK_SIZE)
+            if split_at == -1:
+                split_at = text.rfind('\n', 0, self._CHUNK_SIZE)
+            if split_at == -1:
+                split_at = text.rfind('. ', 0, self._CHUNK_SIZE)
+            if split_at == -1:
+                split_at = self._CHUNK_SIZE
+            chunks.append(text[:split_at].strip())
+            text = text[split_at:].strip()
+        return [c for c in chunks if c]
+
+# ---------------------------------------------------------------------------
 # Bot globals
 # ---------------------------------------------------------------------------
 db = Database(DB_FILE)
 analyzer = TextAnalyzer()
 vis = DataVisualizer()
+translator = Translator()
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # ---------------------------------------------------------------------------
@@ -769,6 +891,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('🔄 Автосбор'),
         telebot.types.KeyboardButton('🔎 Поиск'),
         telebot.types.KeyboardButton('🔬 Морфо'),
+        telebot.types.KeyboardButton('🌐 Переводчик'),
     )
 
     bot.reply_to(
@@ -793,7 +916,8 @@ def start(message: telebot.types.Message) -> None:
         '  /search <слово> — найти предложения с нужным словом в корпусе\n'
         '  /morph <слово> — морфологический анализ слова\n'
         '  /morph\\_stats — статистика частей речи в корпусе\n'
-        '  /morph\\_freq — частота грамматических форм в корпусе',
+        '  /morph\\_freq — частота грамматических форм в корпусе\n'
+        '  /translate [язык] — перевести корпус на указанный язык',
         parse_mode='Markdown',
         reply_markup=markup,
     )
@@ -1695,6 +1819,128 @@ def button_toggle_collect(message: telebot.types.Message) -> None:
     toggle_collect(message)
 
 
+# ---------------------------------------------------------------------------
+# Translation helpers and command handlers
+# ---------------------------------------------------------------------------
+
+def _do_translate(message: telebot.types.Message, target_lang: str) -> None:
+    """Core translation logic: translate the shared corpus into *target_lang*."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    logger.info('[/translate] Перевод корпуса на "%s" для user_id=%s', target_lang, user_id)
+
+    if not _DEEP_TRANSLATOR_AVAILABLE:
+        bot.send_message(
+            chat_id,
+            '⚠️ Машинный перевод недоступен: библиотека *deep-translator* не установлена.',
+            parse_mode='Markdown',
+        )
+        return
+
+    combined = _get_user_corpus_text(message)
+    if combined is None:
+        return
+
+    # Validate / normalise the target language via supported list.
+    supported = translator.get_supported_languages()  # {name: code}
+    lang_lower = target_lang.strip().lower()
+    # Accept both full name and ISO code.
+    if lang_lower in supported:
+        resolved_lang = supported[lang_lower]
+    elif lang_lower in supported.values():
+        resolved_lang = lang_lower
+    else:
+        # Try partial name match.
+        matches = [code for name, code in supported.items() if lang_lower in name]
+        if len(matches) == 1:
+            resolved_lang = matches[0]
+        else:
+            bot.send_message(
+                chat_id,
+                f'❌ Язык *{_escape_markdown(target_lang)}* не поддерживается.\n'
+                'Укажите язык на английском, например: `russian`, `english`, `french`, `german`.',
+                parse_mode='Markdown',
+            )
+            return
+
+    bot.send_message(chat_id, f'🌐 Переводю корпус на *{_escape_markdown(target_lang)}*…',
+                     parse_mode='Markdown')
+
+    try:
+        translated = translator.translate(combined, target_lang=resolved_lang)
+    except Exception as exc:  # noqa: BLE001
+        logger.error('[/translate] Ошибка перевода для user_id=%s: %s', user_id, exc)
+        bot.send_message(
+            chat_id,
+            '❌ Не удалось выполнить перевод. Проверьте название языка и повторите попытку.',
+            parse_mode='Markdown',
+        )
+        return
+
+    # Persist translation to database (attributed to the requester).
+    db.save_translation(
+        user_id=user_id,
+        source_lang='auto',
+        target_lang=resolved_lang,
+        original_text=combined,
+        translated_text=translated,
+    )
+
+    header = f'🌐 *Перевод корпуса* (→ {_escape_markdown(target_lang)}):\n\n'
+    full_reply = header + translated
+    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
+        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
+    else:
+        bot.send_message(chat_id, header, parse_mode='Markdown')
+        for i in range(0, len(translated), TELEGRAM_MAX_MESSAGE_LEN):
+            bot.send_message(chat_id, translated[i:i + TELEGRAM_MAX_MESSAGE_LEN])
+    logger.info('[/translate] Перевод отправлен user_id=%s', user_id)
+
+
+def _receive_translate_lang(message: telebot.types.Message) -> None:
+    """Next-step handler: receives the target language entered by the user."""
+    target_lang = (message.text or '').strip()
+    if not target_lang or target_lang.startswith('/'):
+        logger.info('[Button/🌐] Пустой или командный ввод от user_id=%s, перевод отменён',
+                    message.from_user.id)
+        bot.reply_to(message, '❌ Язык не введён. Перевод отменён.')
+        return
+    logger.info('[Button/🌐] Перевод на "%s" для user_id=%s (next-step)',
+                target_lang, message.from_user.id)
+    _do_translate(message, target_lang)
+
+
+@bot.message_handler(commands=['translate'])
+def translate_corpus(message: telebot.types.Message) -> None:
+    """/translate [language] — translate the shared corpus into the target language."""
+    logger.info('[/translate] user_id=%s', message.from_user.id)
+    parts = message.text.split(maxsplit=1)
+    target_lang = parts[1].strip() if len(parts) > 1 else ''
+
+    if not target_lang:
+        sent = bot.reply_to(
+            message,
+            '🌐 Укажите язык перевода (например: `russian`, `english`, `french`).',
+            parse_mode='Markdown',
+        )
+        bot.register_next_step_handler(sent, _receive_translate_lang)
+        return
+
+    _do_translate(message, target_lang)
+
+
+@bot.message_handler(func=lambda m: m.text == '🌐 Переводчик')
+def button_translate(message: telebot.types.Message) -> None:
+    """Handle '🌐 Переводчик' button – prompt for target language, then translate."""
+    logger.info('[Button/🌐] user_id=%s', message.from_user.id)
+    sent = bot.send_message(
+        message.chat.id,
+        '🌐 Введите язык перевода (например: `russian`, `english`, `french`).',
+        parse_mode='Markdown',
+    )
+    bot.register_next_step_handler(sent, _receive_translate_lang)
+
+
 @bot.message_handler(content_types=['text'])
 def add_to_corpus(message: telebot.types.Message) -> None:
     """Buffer plain-text messages; after COLLECT_WINDOW seconds of inactivity,
@@ -1768,6 +2014,7 @@ def _register_commands() -> None:
         telebot.types.BotCommand('morph',        'Морфологический анализ слова'),
         telebot.types.BotCommand('morph_stats',  'Статистика частей речи в корпусе'),
         telebot.types.BotCommand('morph_freq',   'Частота грамматических форм в корпусе'),
+        telebot.types.BotCommand('translate',    'Перевести корпус на указанный язык'),
     ]
     bot.set_my_commands(commands)
     logger.info('Команды меню зарегистрированы (%d команд)', len(commands))
