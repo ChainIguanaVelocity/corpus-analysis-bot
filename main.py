@@ -14,6 +14,12 @@ import telebot
 from dotenv import load_dotenv
 from wordcloud import WordCloud
 
+try:
+    from uniparser_ossetic import OsseticAnalyzer as _OsseticAnalyzer
+    _UNIPARSER_AVAILABLE = True
+except ImportError:
+    _UNIPARSER_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Configuration  (previously config.py)
 # ---------------------------------------------------------------------------
@@ -362,6 +368,8 @@ class Database:
 
 # Common Ossetian (Iron dialect) stopwords — function words, pronouns,
 # particles, conjunctions, and frequent auxiliary verb forms.
+# Extended with additional function words from the Ossetian National Corpus
+# and the uniparser-ossetic grammar base.
 _OSSETIAN_STOPWORDS = {
     # Personal pronouns
     'æз', 'ды', 'уый', 'мах', 'сымах', 'уыдон',
@@ -385,6 +393,25 @@ _OSSETIAN_STOPWORDS = {
     'цы', 'чи', 'кæй', 'кæм', 'кæцæй',
     'æй', 'ын', 'ыл', 'æнæ', 'дзы',
     'уæм', 'сæм', 'ыф', 'æм',
+    # Additional function words from Ossetian corpus / uniparser grammar base
+    # Interrogative / relative pronouns and adverbs
+    'кæцы', 'кæд', 'кæдæм', 'кæцæй', 'кæй', 'цавæр', 'цыфæндый',
+    # Demonstrative pronouns (oblique forms)
+    'уымæн', 'уымæ', 'уымæй', 'уыцыты', 'ацытæ', 'уыдонæн',
+    # Reflexive / intensifying particles
+    'хæдæг', 'хæдæгæй', 'иууылдæр', 'иууыл',
+    # Modal particles and discourse markers
+    'зæгъгæ', 'æнæмæнг', 'æцæг', 'æгæр', 'раст', 'хорз',
+    # Prepositions and postpositions
+    'йедтæмæ', 'иннæмæ', 'тыххæй', 'хæццæ', 'сæрмæ',
+    # Coordinating / subordinating conjunctions
+    'кæнæ', 'æрмæстдæр', 'афтæмæй', 'уæдæ', 'цæмæй',
+    # High-frequency verb auxiliaries (copula inflections)
+    'ис', 'нæй', 'уыдаид', 'уаид', 'æрцыд', 'æрцыдысты',
+    # Numerals used as function words
+    'иу', 'дыуæ', 'æртæ',
+    # Common adverbs
+    'афтæ', 'уæлæ', 'дæлæ', 'ардæм', 'уырдæм', 'æнæхъæн',
 }
 
 # Sentence boundary: split on . ! ? followed by whitespace or end-of-string.
@@ -396,6 +423,16 @@ _TOKEN_RE = re.compile(r'[^\W\d_]+|\d+', re.UNICODE)
 class TextAnalyzer:
     def __init__(self):
         self.stop_words = _OSSETIAN_STOPWORDS
+        # Try to initialise the Ossetian Uniparser for real morphological analysis.
+        self._uniparser = None
+        if _UNIPARSER_AVAILABLE:
+            try:
+                self._uniparser = _OsseticAnalyzer()
+                logger.info('[Analyzer] OsseticAnalyzer (uniparser-ossetic) загружен')
+            except Exception as exc:  # noqa: BLE001
+                logger.warning('[Analyzer] Не удалось загрузить OsseticAnalyzer: %s — используется fallback', exc)
+        else:
+            logger.warning('[Analyzer] uniparser-ossetic недоступен — используется fallback-лемматизация')
         logger.info('[Analyzer] TextAnalyzer инициализирован (%d стоп-слов)', len(self.stop_words))
 
     def tokenize(self, text):
@@ -404,10 +441,34 @@ class TextAnalyzer:
         return tokens
 
     def lemmatize(self, tokens):
-        # Ossetian morphological resources are not available via pymorphy2;
-        # return each token in its lowercase form as a stand-in for the lemma.
-        logger.info('[Analyzer] Лемматизация: %d токенов → %d уникальных лемм', len(tokens), len(set(tokens)))
-        return tokens
+        """Return the lemma for each token.
+
+        Uses OsseticAnalyzer (uniparser-ossetic) when available.  Falls back to
+        returning each token in lowercase when the parser is not installed or
+        fails to analyse a particular token.
+        """
+        if self._uniparser is None:
+            logger.info(
+                '[Analyzer] Лемматизация (fallback): %d токенов → %d уникальных лемм',
+                len(tokens), len(set(tokens)),
+            )
+            return tokens
+
+        lemmas = []
+        for token in tokens:
+            try:
+                analyses = self._uniparser.analyze_words(token)
+                if analyses and hasattr(analyses[0], 'lemma') and analyses[0].lemma:
+                    lemmas.append(analyses[0].lemma.lower())
+                else:
+                    lemmas.append(token)
+            except Exception:  # noqa: BLE001
+                lemmas.append(token)
+        logger.info(
+            '[Analyzer] Лемматизация (uniparser): %d токенов → %d уникальных лемм',
+            len(tokens), len(set(lemmas)),
+        )
+        return lemmas
 
     def remove_stopwords(self, tokens):
         cleaned = [token for token in tokens if token not in self.stop_words]

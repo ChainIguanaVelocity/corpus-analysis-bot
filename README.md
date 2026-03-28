@@ -6,7 +6,7 @@ A Telegram bot for linguistic and statistical analysis of **Ossetian (Iron diale
 
 ## Features
 
-- **Text Analysis** (`/analyze`) — tokenisation, Ossetian stopword removal, frequency distribution, and a full statistics summary.
+- **Text Analysis** (`/analyze`) — tokenisation, Ossetian stopword removal, frequency distribution, full statistics summary, and morphological lemmatisation via Ossetian Uniparser.
 - **Frequency Chart** (`/frequency`) — returns a bar chart of the top-20 most frequent words.
 - **Word Cloud** (`/wordcloud`) — generates a word cloud image from the input text.
 - **Statistics** (`/stats`) — word count, unique words, sentence count, average word length, and lexical diversity.
@@ -106,6 +106,24 @@ corpus-analysis-bot/
 | `pyTelegramBotAPI` | Telegram Bot API client |
 | `wordcloud` | Word cloud image generation |
 | `python-dotenv` | `.env` file loading |
+| `uniparser-ossetic` | Rule-based morphological analyser for Ossetian (Iron dialect) — lemmatisation and grammatical tagging |
+
+---
+
+## Morphological Analysis (Uniparser)
+
+The bot uses [uniparser-ossetic](https://pypi.org/project/uniparser-ossetic/) to perform real morphological lemmatisation on Ossetian text.  On first use the analyser loads its grammar data, which may take a few seconds.
+
+```python
+from uniparser_ossetic import OsseticAnalyzer
+
+a = OsseticAnalyzer()
+analyses = a.analyze_words('æвзаджы')
+for ana in analyses:
+    print(ana.wf, ana.lemma, ana.gramm)
+```
+
+If the package is not installed, the bot falls back to simple lowercase tokenisation without morphological analysis.
 
 ---
 
