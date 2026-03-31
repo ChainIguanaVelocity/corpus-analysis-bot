@@ -853,7 +853,11 @@ analyzer = TextAnalyzer()
 vis = DataVisualizer()
 translator = Translator()
 if not TELEGRAM_TOKEN:
-    logger.warning('TELEGRAM_TOKEN не задан — бот не сможет подключиться к Telegram.')
+    logger.error(
+        'TELEGRAM_TOKEN не задан. Создайте файл .env и укажите токен бота '
+        '(см. .env.example). Запуск невозможен.'
+    )
+    raise SystemExit(1)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # ---------------------------------------------------------------------------
