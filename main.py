@@ -38,6 +38,9 @@ load_dotenv()
 
 TELEGRAM_TOKEN: str = os.getenv('TELEGRAM_TOKEN', '')
 YANDEX_API_KEY: str = os.getenv('YANDEX_API_KEY', '')
+YANDEX_IAM_TOKEN: str = os.getenv('YANDEX_IAM_TOKEN', '')
+YANDEX_LLM_MODEL_URI: str = os.getenv('YANDEX_LLM_MODEL_URI', '')
+YANDEX_FOLDER_ID: str = os.getenv('YANDEX_FOLDER_ID', '')
 DB_FILE: str = os.getenv('DB_FILE', 'corpus_analysis.sqlite3')
 LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
 MAX_TEXT_LENGTH: int = int(os.getenv('MAX_TEXT_LENGTH', '10000'))
@@ -139,6 +142,33 @@ class Database:
                 target_lang TEXT NOT NULL,
                 original_text TEXT NOT NULL,
                 translated_text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS yandex_ai_translations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_lang TEXT NOT NULL,
+                target_lang TEXT NOT NULL,
+                original_text TEXT NOT NULL,
+                translated_text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS yandex_ai_explanations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                word TEXT NOT NULL UNIQUE,
+                explanation TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS yandex_ai_analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                original_text TEXT NOT NULL,
+                analysis_result TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         )
@@ -378,6 +408,90 @@ class Database:
         except Error as e:
             logger.error('[DB] get_translations error: %s', e)
             return []
+
+    def get_yandex_ai_translation_cache(self, original_text: str, source_lang: str,
+                                         target_lang: str) -> str | None:
+        """Look up a cached Yandex AI translation. Returns translated text or None."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT translated_text FROM yandex_ai_translations '
+                'WHERE original_text = ? AND source_lang = ? AND target_lang = ? '
+                'ORDER BY id DESC LIMIT 1',
+                (original_text, source_lang, target_lang),
+            )
+            row = cur.fetchone()
+            if row:
+                logger.info('[DB] Кеш YAI-перевода найден (%s→%s)', source_lang, target_lang)
+                return row[0]
+            return None
+        except Error as e:
+            logger.error('[DB] get_yandex_ai_translation_cache error: %s', e)
+            return None
+
+    def save_yandex_ai_translation_cache(self, original_text: str, source_lang: str,
+                                          target_lang: str, translated_text: str) -> None:
+        """Save a Yandex AI translation result to the cache."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'INSERT INTO yandex_ai_translations(source_lang, target_lang, original_text, translated_text) '
+                'VALUES(?, ?, ?, ?)',
+                (source_lang, target_lang, original_text, translated_text),
+            )
+            self.conn.commit()
+            logger.info('[DB] YAI-перевод закеширован (%s→%s)', source_lang, target_lang)
+        except Error as e:
+            logger.error('[DB] save_yandex_ai_translation_cache error: %s', e)
+
+    def get_yandex_ai_explanation_cache(self, word: str) -> str | None:
+        """Look up a cached word explanation. Returns explanation text or None."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT explanation FROM yandex_ai_explanations WHERE word = ? LIMIT 1',
+                (word.lower(),),
+            )
+            row = cur.fetchone()
+            if row:
+                logger.info('[DB] Кеш объяснения слова "%s" найден', word)
+                return row[0]
+            return None
+        except Error as e:
+            logger.error('[DB] get_yandex_ai_explanation_cache error: %s', e)
+            return None
+
+    def save_yandex_ai_explanation_cache(self, word: str, explanation: str) -> None:
+        """Save a word explanation to the cache (upsert by word)."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'INSERT INTO yandex_ai_explanations(word, explanation) VALUES(?, ?) '
+                'ON CONFLICT(word) DO UPDATE SET explanation=excluded.explanation, '
+                'created_at=CURRENT_TIMESTAMP',
+                (word.lower(), explanation),
+            )
+            self.conn.commit()
+            logger.info('[DB] Объяснение слова "%s" закешировано', word)
+        except Error as e:
+            logger.error('[DB] save_yandex_ai_explanation_cache error: %s', e)
+
+    def save_yandex_ai_analysis(self, user_id: int, original_text: str,
+                                 analysis_result: str) -> int | None:
+        """Save a Yandex AI text analysis result. Returns the new row id."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'INSERT INTO yandex_ai_analyses(user_id, original_text, analysis_result) '
+                'VALUES(?, ?, ?)',
+                (user_id, original_text, analysis_result),
+            )
+            self.conn.commit()
+            logger.info('[DB] YAI-анализ сохранён, row_id=%s', cur.lastrowid)
+            return cur.lastrowid
+        except Error as e:
+            logger.error('[DB] save_yandex_ai_analysis error: %s', e)
+            return None
 
     def import_texts_from_directory(self, user_id: int, texts_dir: str = 'texts',
                                     analyzer=None) -> dict:
@@ -846,12 +960,102 @@ class Translator:
         return [c for c in chunks if c]
 
 # ---------------------------------------------------------------------------
+# Yandex LLM (Yandex.GPT) client
+# ---------------------------------------------------------------------------
+
+class YandexLLMClient:
+    """Client for Yandex Foundation Models (Yandex.GPT) API.
+
+    Authentication priority:
+    1. ``YANDEX_IAM_TOKEN`` — IAM token (short-lived, recommended for production)
+    2. ``YANDEX_API_KEY``   — API key (same key used by Yandex Translate)
+
+    Model URI is resolved from ``YANDEX_LLM_MODEL_URI`` if set, otherwise
+    constructed from ``YANDEX_FOLDER_ID`` using the ``yandexgpt-lite`` model.
+    """
+
+    _URL = 'https://llm.api.cloud.yandex.net/foundationModels/v1/completion'
+
+    def __init__(self) -> None:
+        self._iam_token = YANDEX_IAM_TOKEN
+        self._api_key = YANDEX_API_KEY
+        self._model_uri = YANDEX_LLM_MODEL_URI
+        self._folder_id = YANDEX_FOLDER_ID
+        self.available: bool = bool(self._iam_token or self._api_key)
+        if self.available:
+            logger.info('[YandexLLM] Клиент инициализирован (IAM=%s, API_KEY=%s)',
+                        bool(self._iam_token), bool(self._api_key))
+        else:
+            logger.warning('[YandexLLM] Токен аутентификации не задан — функции ИИ недоступны')
+
+    def _get_model_uri(self) -> str:
+        if self._model_uri:
+            return self._model_uri
+        if self._folder_id:
+            return f'gpt://{self._folder_id}/yandexgpt-lite'
+        # Fallback: use a public lite model URI placeholder that callers can override.
+        return ''
+
+    def complete(self, system_prompt: str, user_text: str,
+                 temperature: float = 0.5, max_tokens: int = 2000) -> str:
+        """Send a prompt to Yandex.GPT and return the text response.
+
+        Raises :class:`RuntimeError` when authentication or model URI is missing,
+        or when the API request fails.
+        """
+        if not self.available:
+            raise RuntimeError(
+                'Yandex LLM недоступен: задайте YANDEX_IAM_TOKEN или YANDEX_API_KEY в .env'
+            )
+        model_uri = self._get_model_uri()
+        if not model_uri:
+            raise RuntimeError(
+                'Yandex LLM: URI модели не задан — укажите YANDEX_LLM_MODEL_URI '
+                'или YANDEX_FOLDER_ID в .env'
+            )
+
+        headers: dict[str, str] = {'Content-Type': 'application/json'}
+        if self._iam_token:
+            headers['Authorization'] = f'Bearer {self._iam_token}'
+        else:
+            headers['Authorization'] = f'Api-Key {self._api_key}'
+
+        body = {
+            'modelUri': model_uri,
+            'completionOptions': {
+                'stream': False,
+                'temperature': temperature,
+                'maxTokens': str(max_tokens),
+            },
+            'messages': [
+                {'role': 'system', 'text': system_prompt},
+                {'role': 'user', 'text': user_text},
+            ],
+        }
+        logger.info('[YandexLLM] Запрос к API (model=%s, max_tokens=%d)', model_uri, max_tokens)
+        try:
+            response = requests.post(self._URL, headers=headers, json=body, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f'Yandex LLM запрос не удался: {exc}') from exc
+
+        data = response.json()
+        try:
+            text = data['result']['alternatives'][0]['message']['text']
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f'Yandex LLM неожиданный формат ответа: {data}') from exc
+        logger.info('[YandexLLM] Ответ получен (%d симв.)', len(text))
+        return text
+
+
+# ---------------------------------------------------------------------------
 # Bot globals
 # ---------------------------------------------------------------------------
 db = Database(DB_FILE)
 analyzer = TextAnalyzer()
 vis = DataVisualizer()
 translator = Translator()
+yandex_llm = YandexLLMClient()
 if not TELEGRAM_TOKEN:
     logger.warning('TELEGRAM_TOKEN не задан — бот не сможет подключиться к Telegram.')
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -994,6 +1198,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('🔎 Поиск'),
         telebot.types.KeyboardButton('🔬 Морфо'),
         telebot.types.KeyboardButton('🌐 Переводчик'),
+        telebot.types.KeyboardButton('🤖 Яндекс ИИ'),
     )
 
     bot.reply_to(
@@ -1019,7 +1224,12 @@ def start(message: telebot.types.Message) -> None:
         '  /morph <слово> — морфологический анализ слова\n'
         '  /morph\\_stats — статистика частей речи в корпусе\n'
         '  /morph\\_freq — частота грамматических форм в корпусе\n'
-        '  /translate [язык] — перевести корпус на указанный язык',
+        '  /translate [язык] — перевести корпус на указанный язык\n\n'
+        '🤖 *Яндекс ИИ* — умный перевод и анализ текста без команд:\n'
+        '  Нажмите кнопку *🤖 Яндекс ИИ* и выберите операцию:\n'
+        '  ✨ Перевести слово/предложение (Осетинский ↔ Русский)\n'
+        '  📚 Объяснить слово\n'
+        '  🎯 Анализировать текст',
         parse_mode='Markdown',
         reply_markup=markup,
     )
@@ -1919,6 +2129,332 @@ def button_toggle_collect(message: telebot.types.Message) -> None:
     """Handle '🔄 Автосбор' button – toggle auto-collect mode."""
     logger.info('[Button/🔄] user_id=%s', message.from_user.id)
     toggle_collect(message)
+
+
+# ---------------------------------------------------------------------------
+# Yandex AI handlers
+# ---------------------------------------------------------------------------
+
+# Callback data constants for the Yandex AI menu.
+_YAI_CB_TRANSLATE = 'yai:translate'
+_YAI_CB_EXPLAIN   = 'yai:explain'
+_YAI_CB_ANALYZE   = 'yai:analyze'
+_YAI_CB_TRANS_OS_RU = 'yai:trans:os_ru'
+_YAI_CB_TRANS_RU_OS = 'yai:trans:ru_os'
+
+
+def _send_yandex_ai_menu(chat_id: int) -> None:
+    """Send the Yandex AI inline menu to *chat_id*."""
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton(
+            '✨ Перевести слово/предложение', callback_data=_YAI_CB_TRANSLATE,
+        ),
+    )
+    markup.add(
+        telebot.types.InlineKeyboardButton(
+            '📚 Объяснить слово', callback_data=_YAI_CB_EXPLAIN,
+        ),
+        telebot.types.InlineKeyboardButton(
+            '🎯 Анализ текста', callback_data=_YAI_CB_ANALYZE,
+        ),
+    )
+    bot.send_message(
+        chat_id,
+        '🤖 *Яндекс ИИ* — выберите операцию:',
+        parse_mode='Markdown',
+        reply_markup=markup,
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == '🤖 Яндекс ИИ')
+def button_yandex_ai(message: telebot.types.Message) -> None:
+    """Handle '🤖 Яндекс ИИ' button – show AI operations menu."""
+    logger.info('[Button/🤖] user_id=%s', message.from_user.id)
+    _send_yandex_ai_menu(message.chat.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_TRANSLATE)
+def callback_yai_translate(call: telebot.types.CallbackQuery) -> None:
+    """Show translation direction selection for Yandex AI translate."""
+    bot.answer_callback_query(call.id)
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.row(
+        telebot.types.InlineKeyboardButton(
+            '✨ Осетинский → Русский', callback_data=_YAI_CB_TRANS_OS_RU,
+        ),
+        telebot.types.InlineKeyboardButton(
+            '✨ Русский → Осетинский', callback_data=_YAI_CB_TRANS_RU_OS,
+        ),
+    )
+    bot.send_message(
+        call.message.chat.id,
+        '🌐 Выберите направление перевода:',
+        reply_markup=markup,
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data in (_YAI_CB_TRANS_OS_RU, _YAI_CB_TRANS_RU_OS),
+)
+def callback_yai_translate_direction(call: telebot.types.CallbackQuery) -> None:
+    """Handle translation direction selection for Yandex AI translate."""
+    bot.answer_callback_query(call.id)
+    if call.data == _YAI_CB_TRANS_OS_RU:
+        source_lang, target_lang = 'os', 'ru'
+    else:
+        source_lang, target_lang = 'ru', 'os'
+    sent = bot.send_message(call.message.chat.id, '✏️ Введите слово или предложение для перевода:')
+    bot.register_next_step_handler(sent, _receive_yai_translate_text, source_lang, target_lang)
+
+
+def _receive_yai_translate_text(message: telebot.types.Message,
+                                  source_lang: str, target_lang: str) -> None:
+    """Next-step handler: translates word or sentence entered by the user."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    text = (message.text or '').strip()
+
+    if not text or text.startswith('/'):
+        logger.info('[YAI/translate] Пустой ввод от user_id=%s, перевод отменён', user_id)
+        bot.reply_to(message, '❌ Текст не введён. Перевод отменён.')
+        return
+
+    logger.info('[YAI/translate] Перевод "%s" (%s→%s) для user_id=%s',
+                text[:50], source_lang, target_lang, user_id)
+
+    # Check cache first.
+    cached = db.get_yandex_ai_translation_cache(text, source_lang, target_lang)
+    if cached:
+        logger.info('[YAI/translate] Кеш попадание для user_id=%s', user_id)
+        _send_yai_translation_result(chat_id, text, cached, source_lang, target_lang)
+        return
+
+    try:
+        translated = translator.translate(text, target_lang=target_lang, source_lang=source_lang)
+    except Exception as exc:  # noqa: BLE001
+        logger.error('[YAI/translate] Ошибка перевода для user_id=%s: %s', user_id, exc)
+        bot.send_message(chat_id, '❌ Не удалось выполнить перевод. Попробуйте ещё раз.')
+        return
+
+    # Save to cache.
+    db.save_yandex_ai_translation_cache(text, source_lang, target_lang, translated)
+
+    _send_yai_translation_result(chat_id, text, translated, source_lang, target_lang)
+
+    # Also persist to the user translations history.
+    db.save_translation(
+        user_id=user_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        original_text=text,
+        translated_text=translated,
+    )
+
+    # For a single word, also show morphological analysis if available.
+    words = text.split()
+    if len(words) == 1 and analyzer._uniparser is not None:
+        info_list = analyzer.get_morphological_info(text)
+        if info_list:
+            lines = [f'\n🔬 *Морфологический анализ:*']
+            for i, info in enumerate(info_list, 1):
+                if len(info_list) > 1:
+                    lines.append(f'*Вариант {i}:*')
+                lines.append(f'  Лемма: {_escape_markdown(info["lemma"])}')
+                lines.append(f'  Часть речи: {_escape_markdown(info["pos"])}')
+                if info['features']:
+                    lines.append(f'  Признаки: {_escape_markdown(", ".join(info["features"]))}')
+            morph_msg = '\n'.join(lines)
+            if len(morph_msg) <= TELEGRAM_MAX_MESSAGE_LEN:
+                bot.send_message(chat_id, morph_msg, parse_mode='Markdown')
+
+
+def _send_yai_translation_result(chat_id: int, original: str, translated: str,
+                                   source_lang: str, target_lang: str) -> None:
+    """Send a formatted translation result to the chat."""
+    if source_lang == 'os' and target_lang == 'ru':
+        direction_label = 'ос → рус'
+    elif source_lang == 'ru' and target_lang == 'os':
+        direction_label = 'рус → ос'
+    else:
+        direction_label = f'{source_lang} → {target_lang}'
+
+    words = original.split()
+    is_word = len(words) == 1
+    kind_label = 'слова' if is_word else 'предложения'
+
+    header = f'🤖 *Перевод {kind_label}* ({direction_label}):\n\n'
+    body = f'📝 Оригинал: _{_escape_markdown(original)}_\n🔄 Перевод: *{_escape_markdown(translated)}*'
+    full_reply = header + body
+
+    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
+        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
+    else:
+        bot.send_message(chat_id, header, parse_mode='Markdown')
+        bot.send_message(chat_id, translated)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_EXPLAIN)
+def callback_yai_explain(call: telebot.types.CallbackQuery) -> None:
+    """Prompt the user to enter a word for explanation."""
+    bot.answer_callback_query(call.id)
+    sent = bot.send_message(call.message.chat.id, '📚 Введите слово для объяснения:')
+    bot.register_next_step_handler(sent, _receive_yai_explain_text)
+
+
+def _receive_yai_explain_text(message: telebot.types.Message) -> None:
+    """Next-step handler: explains the word entered by the user using Yandex.GPT."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    word = (message.text or '').strip()
+
+    if not word or word.startswith('/'):
+        logger.info('[YAI/explain] Пустой ввод от user_id=%s, объяснение отменено', user_id)
+        bot.reply_to(message, '❌ Слово не введено. Операция отменена.')
+        return
+
+    # Only single words are accepted for explanation.
+    if len(word.split()) > 1:
+        bot.reply_to(
+            message,
+            '⚠️ Введите одно слово для объяснения (не предложение).',
+        )
+        return
+
+    logger.info('[YAI/explain] Объяснение слова "%s" для user_id=%s', word, user_id)
+
+    # Check cache first.
+    cached = db.get_yandex_ai_explanation_cache(word)
+    if cached:
+        logger.info('[YAI/explain] Кеш попадание для слова "%s" (user_id=%s)', word, user_id)
+        _send_yai_explanation_result(chat_id, word, cached)
+        return
+
+    if not yandex_llm.available:
+        bot.send_message(
+            chat_id,
+            '⚠️ Функция объяснения недоступна: задайте *YANDEX\\_IAM\\_TOKEN* или '
+            '*YANDEX\\_API\\_KEY* и *YANDEX\\_FOLDER\\_ID* в файле `.env`.',
+            parse_mode='Markdown',
+        )
+        return
+
+    # Include morphological info in the prompt when available.
+    morph_context = ''
+    if analyzer._uniparser is not None:
+        info_list = analyzer.get_morphological_info(word)
+        if info_list:
+            info = info_list[0]
+            morph_context = (
+                f'\nМорфологический анализ: лемма={info["lemma"]}, '
+                f'часть речи={info["pos"]}, граммемы={info["gramm"]}'
+            )
+
+    system_prompt = (
+        'Ты — лингвистический помощник, специализирующийся на осетинском языке. '
+        'Отвечай на русском языке. Будь кратким и информативным.'
+    )
+    user_prompt = (
+        f'Объясни слово на осетинском языке: «{word}»{morph_context}\n\n'
+        'Дай:\n'
+        '1) Определение на русском языке\n'
+        '2) Контекст использования в осетинском языке\n'
+        '3) Синонимы или примеры использования (если есть)'
+    )
+
+    bot.send_message(chat_id, '⏳ Генерирую объяснение...')
+    try:
+        explanation = yandex_llm.complete(system_prompt, user_prompt)
+    except RuntimeError as exc:
+        logger.error('[YAI/explain] Ошибка LLM для user_id=%s: %s', user_id, exc)
+        bot.send_message(
+            chat_id,
+            f'❌ Не удалось получить объяснение: {exc}',
+        )
+        return
+
+    # Cache and send.
+    db.save_yandex_ai_explanation_cache(word, explanation)
+    _send_yai_explanation_result(chat_id, word, explanation)
+
+
+def _send_yai_explanation_result(chat_id: int, word: str, explanation: str) -> None:
+    """Send a formatted word explanation to the chat."""
+    header = f'📚 *Объяснение слова:* _{_escape_markdown(word)}_\n\n'
+    full_reply = header + explanation
+    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
+        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
+    else:
+        bot.send_message(chat_id, header, parse_mode='Markdown')
+        bot.send_message(chat_id, explanation)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_ANALYZE)
+def callback_yai_analyze(call: telebot.types.CallbackQuery) -> None:
+    """Prompt the user to enter a text for AI analysis."""
+    bot.answer_callback_query(call.id)
+    sent = bot.send_message(call.message.chat.id, '🎯 Введите текст для анализа:')
+    bot.register_next_step_handler(sent, _receive_yai_analyze_text)
+
+
+def _receive_yai_analyze_text(message: telebot.types.Message) -> None:
+    """Next-step handler: analyses the text entered by the user using Yandex.GPT."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    text = (message.text or '').strip()
+
+    if not text or text.startswith('/'):
+        logger.info('[YAI/analyze] Пустой ввод от user_id=%s, анализ отменён', user_id)
+        bot.reply_to(message, '❌ Текст не введён. Анализ отменён.')
+        return
+
+    logger.info('[YAI/analyze] Анализ текста (%d симв.) для user_id=%s', len(text), user_id)
+
+    if not yandex_llm.available:
+        bot.send_message(
+            chat_id,
+            '⚠️ Функция анализа недоступна: задайте *YANDEX\\_IAM\\_TOKEN* или '
+            '*YANDEX\\_API\\_KEY* и *YANDEX\\_FOLDER\\_ID* в файле `.env`.',
+            parse_mode='Markdown',
+        )
+        return
+
+    system_prompt = (
+        'Ты — эксперт по осетинскому языку и лингвистическому анализу текста. '
+        'Отвечай на русском языке. Будь структурированным и информативным.'
+    )
+    user_prompt = (
+        f'Проанализируй следующий текст:\n\n«{text}»\n\n'
+        'Предоставь:\n'
+        '1) Главная идея текста\n'
+        '2) Ключевые слова\n'
+        '3) Предложенный перевод на русский язык с пояснением\n'
+        '4) Лингвистические особенности (если есть)'
+    )
+
+    bot.send_message(chat_id, '⏳ Анализирую текст...')
+    try:
+        analysis = yandex_llm.complete(system_prompt, user_prompt, max_tokens=3000)
+    except RuntimeError as exc:
+        logger.error('[YAI/analyze] Ошибка LLM для user_id=%s: %s', user_id, exc)
+        bot.send_message(
+            chat_id,
+            f'❌ Не удалось выполнить анализ: {exc}',
+        )
+        return
+
+    # Save analysis to database.
+    db.save_yandex_ai_analysis(user_id, text, analysis)
+
+    header = '🎯 *Анализ текста (Яндекс ИИ):*\n\n'
+    full_reply = header + analysis
+    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
+        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
+    else:
+        bot.send_message(chat_id, header, parse_mode='Markdown')
+        for i in range(0, len(analysis), TELEGRAM_MAX_MESSAGE_LEN):
+            bot.send_message(chat_id, analysis[i:i + TELEGRAM_MAX_MESSAGE_LEN])
+    logger.info('[YAI/analyze] Анализ отправлен user_id=%s', user_id)
 
 
 # ---------------------------------------------------------------------------
