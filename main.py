@@ -2,6 +2,7 @@ import itertools
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import tempfile
@@ -1066,7 +1067,59 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # Startup notification
 # ---------------------------------------------------------------------------
 _STARTUP_NOTIFY_USER_ID: int = 6117734481
-_STARTUP_NOTIFY_MESSAGE: str = 'Дорогая Лали, Юрий просил передать, что любит тебя!'
+_STARTUP_NOTIFY_MESSAGES: list[str] = [
+    # English
+    'Dear Lali, Yuri asked me to tell you that he loves you!',
+    # French
+    "Chère Lali, Yuri m'a demandé de te dire qu'il t'aime !",
+    # Spanish
+    'Querida Lali, Yuri me pidió que te dijera que te ama.',
+    # German
+    'Liebe Lali, Yuri hat mich gebeten, dir zu sagen, dass er dich liebt!',
+    # Italian
+    'Cara Lali, Yuri mi ha chiesto di dirti che ti ama!',
+    # Portuguese
+    'Querida Lali, Yuri pediu para te dizer que te ama!',
+    # Dutch
+    'Lieve Lali, Yuri vroeg me om te zeggen dat hij van je houdt!',
+    # Ukrainian
+    'Дорога Лалі, Юрій просив передати, що любить тебе!',
+    # Polish
+    'Droga Lali, Yuri prosił przekazać, że cię kocha!',
+    # Czech
+    'Milá Lali, Yuri mě požádal, abych ti řekl, že tě miluje!',
+    # Serbian
+    'Драга Лали, Јуриј је замолио да ти пренесем да те воли!',
+    # Georgian
+    'ძვირფასო ლალი, იურიმ მთხოვა გადმომეცა, რომ უყვარხარ!',
+    # Armenian
+    'Սիրելի Լալի, Յուրին խնդրեց փոխանցել, որ սիրում է քեզ։',
+    # Persian
+    'لالی عزیز، یوری خواست بگویم که دوستت دارد!',
+    # Arabic
+    'عزيزتي لالي، طلب يوري أن أخبرك أنه يحبك!',
+    # Turkish
+    'Sevgili Lali, Yuri senden sana onu sevdiğini söylememi istedi!',
+    # Hebrew
+    'לאלי היקרה, יורי ביקש למסור שהוא אוהב אותך!',
+    # Chinese
+    '亲爱的拉莉，尤里让我转告你，他爱你！',
+    # Japanese
+    '親愛なるラリへ、ユーリが君を愛していると伝えてほしいと言っていました！',
+    # Korean
+    '사랑하는 라리, 유리가 당신을 사랑한다고 전해달라고 했어요!',
+    # Hindi
+    'प्रिय लाली, यूरी ने कहा है कि वह तुमसे प्यार करता है!',
+    # Swahili
+    'Mpenzi Lali, Yuri aliniomba nikuambie kwamba anakupenda!',
+    # Latin
+    'Cara Lali, Yuri rogavit ut tibi dicam se te amare!',
+]
+
+
+def _get_random_startup_message() -> str:
+    """Return a random startup notification message from the multilingual list."""
+    return random.choice(_STARTUP_NOTIFY_MESSAGES)
 
 # ---------------------------------------------------------------------------
 # Per-user message-collection state (for the 3-second analysis window)
@@ -2653,7 +2706,7 @@ def _register_commands() -> None:
 def _send_startup_notification() -> None:
     """Send a one-time startup notification to the configured user."""
     try:
-        bot.send_message(_STARTUP_NOTIFY_USER_ID, _STARTUP_NOTIFY_MESSAGE)
+        bot.send_message(_STARTUP_NOTIFY_USER_ID, _get_random_startup_message())
         logger.info('Startup notification sent to user_id=%d', _STARTUP_NOTIFY_USER_ID)
     except Exception as exc:  # noqa: BLE001
         logger.warning('Failed to send startup notification to user_id=%d: %s',
