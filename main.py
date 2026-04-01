@@ -913,6 +913,8 @@ class Translator:
             'Content-Type': 'application/json',
         }
         body: dict = {'texts': [text], 'targetLanguageCode': target_lang}
+        if YANDEX_FOLDER_ID:
+            body['folderId'] = YANDEX_FOLDER_ID
         if source_lang and source_lang != 'auto':
             body['sourceLanguageCode'] = source_lang
         try:
