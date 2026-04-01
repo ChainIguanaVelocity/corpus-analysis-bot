@@ -2358,6 +2358,25 @@ def callback_yai_explain(call: telebot.types.CallbackQuery) -> None:
     bot.register_next_step_handler(sent, _receive_yai_explain_text)
 
 
+def _get_corpus_examples_for_word(word: str, max_examples: int = 3) -> list[str]:
+    """Return up to *max_examples* sentences from the shared corpus containing *word*.
+
+    Matching uses the same flexible (case- and diacritical-insensitive,
+    whole-word) logic as the /search command.
+    """
+    word_norm = _normalize_ossetian(word)
+    examples: list[str] = []
+    texts = db.get_corpus_texts(SHARED_CORPUS_USER_ID)
+    for text in texts:
+        sentences = [s for s in _SENTENCE_RE.split(text.strip()) if s]
+        for sentence in sentences:
+            if _word_matches_flexible(word_norm, sentence):
+                examples.append(sentence.strip())
+                if len(examples) >= max_examples:
+                    return examples
+    return examples
+
+
 def _receive_yai_explain_text(message: telebot.types.Message) -> None:
     """Next-step handler: explains the word entered by the user using Yandex.GPT."""
     user_id = message.from_user.id
@@ -2379,11 +2398,19 @@ def _receive_yai_explain_text(message: telebot.types.Message) -> None:
 
     logger.info('[YAI/explain] Объяснение слова "%s" для user_id=%s', word, user_id)
 
+    # Collect corpus examples before checking cache so they can be shown even
+    # when the AI explanation comes from cache.
+    corpus_examples = _get_corpus_examples_for_word(word)
+    logger.info(
+        '[YAI/explain] Найдено %d примеров из корпуса для слова "%s"',
+        len(corpus_examples), word,
+    )
+
     # Check cache first.
     cached = db.get_yandex_ai_explanation_cache(word)
     if cached:
         logger.info('[YAI/explain] Кеш попадание для слова "%s" (user_id=%s)', word, user_id)
-        _send_yai_explanation_result(chat_id, word, cached)
+        _send_yai_explanation_result(chat_id, word, cached, corpus_examples)
         return
 
     if not yandex_llm.available:
@@ -2406,16 +2433,26 @@ def _receive_yai_explain_text(message: telebot.types.Message) -> None:
                 f'часть речи={info["pos"]}, граммемы={info["gramm"]}'
             )
 
+    # Include real corpus sentences in the prompt when available.
+    corpus_context = ''
+    if corpus_examples:
+        examples_text = '\n'.join(f'  • {s}' for s in corpus_examples)
+        corpus_context = (
+            f'\n\nПримеры использования из осетинского корпуса текстов:\n{examples_text}'
+        )
+
     system_prompt = (
         'Ты — лингвистический помощник, специализирующийся на осетинском языке. '
-        'Отвечай на русском языке. Будь кратким и информативным.'
+        'Отвечай на русском языке. Структурируй ответ по пронумерованным пунктам.'
     )
     user_prompt = (
-        f'Объясни слово на осетинском языке: «{word}»{morph_context}\n\n'
+        f'Объясни слово на осетинском языке: «{word}»{morph_context}{corpus_context}\n\n'
         'Дай:\n'
         '1) Определение на русском языке\n'
-        '2) Контекст использования в осетинском языке\n'
-        '3) Синонимы или примеры использования (если есть)'
+        '2) Контекст и особенности использования в осетинском языке\n'
+        '3) Синонимы и антонимы (если есть)\n'
+        '4) Этимология или происхождение слова (если известно)\n'
+        '5) Дополнительные примеры использования в предложениях (если примеры из корпуса не предоставлены)'
     )
 
     bot.send_message(chat_id, '⏳ Генерирую объяснение...')
@@ -2431,18 +2468,42 @@ def _receive_yai_explain_text(message: telebot.types.Message) -> None:
 
     # Cache and send.
     db.save_yandex_ai_explanation_cache(word, explanation)
-    _send_yai_explanation_result(chat_id, word, explanation)
+    _send_yai_explanation_result(chat_id, word, explanation, corpus_examples)
 
 
-def _send_yai_explanation_result(chat_id: int, word: str, explanation: str) -> None:
-    """Send a formatted word explanation to the chat."""
+def _send_yai_explanation_result(
+    chat_id: int,
+    word: str,
+    explanation: str,
+    corpus_examples: list[str] | None = None,
+) -> None:
+    """Send a formatted word explanation to the chat.
+
+    The AI-generated *explanation* is always sent first.  When *corpus_examples*
+    are provided a separate section with real corpus sentences is appended.
+    """
     header = f'📚 *Объяснение слова:* _{_escape_markdown(word)}_\n\n'
     full_reply = header + explanation
-    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
-        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
+
+    # Build optional corpus-examples block.
+    corpus_block = ''
+    if corpus_examples:
+        lines = ['\n\n📖 *Примеры из корпуса:*']
+        for i, sentence in enumerate(corpus_examples, 1):
+            lines.append(f'  *{i}.* {_escape_markdown(sentence)}')
+        corpus_block = '\n'.join(lines)
+
+    if len(full_reply) + len(corpus_block) <= TELEGRAM_MAX_MESSAGE_LEN:
+        bot.send_message(chat_id, full_reply + corpus_block, parse_mode='Markdown')
     else:
-        bot.send_message(chat_id, header, parse_mode='Markdown')
-        bot.send_message(chat_id, explanation)
+        # Send header + explanation first; corpus examples as a follow-up if they fit.
+        if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
+            bot.send_message(chat_id, full_reply, parse_mode='Markdown')
+        else:
+            bot.send_message(chat_id, header, parse_mode='Markdown')
+            bot.send_message(chat_id, explanation)
+        if corpus_block and len(corpus_block) <= TELEGRAM_MAX_MESSAGE_LEN:
+            bot.send_message(chat_id, corpus_block.strip(), parse_mode='Markdown')
 
 
 @bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_ANALYZE)
