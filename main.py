@@ -15,9 +15,10 @@ from sqlite3 import Error
 import requests
 
 import telebot
-from dotenv import load_dotenv
-from wordcloud import WordCloud
 
+from wordcloud import WordCloud
+from dotenv import load_dotenv
+load_dotenv()
 try:
     from uniparser_ossetic import OsseticAnalyzer as _OsseticAnalyzer
     _UNIPARSER_AVAILABLE = True
