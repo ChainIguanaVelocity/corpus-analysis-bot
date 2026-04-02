@@ -2686,6 +2686,12 @@ def button_translate(message: telebot.types.Message) -> None:
     _send_translate_direction_keyboard(message.chat.id)
 
 
+@bot.message_handler(func=lambda m: bool(m.text) and not m.text.startswith('/') and len(m.text.split()) == 1)
+def explain_single_word(message: telebot.types.Message) -> None:
+    """Automatically explain a single word sent as a plain message via Yandex.GPT."""
+    _receive_yai_explain_text(message)
+
+
 @bot.message_handler(content_types=['text'])
 def add_to_corpus(message: telebot.types.Message) -> None:
     """Buffer plain-text messages; after COLLECT_WINDOW seconds of inactivity,
