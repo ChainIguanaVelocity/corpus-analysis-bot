@@ -2481,7 +2481,7 @@ def _send_yai_explanation_result(
     are provided a separate section with real corpus sentences is appended.
     """
     header = f'📚 *Объяснение слова:* _{_escape_markdown(word)}_\n\n'
-    full_reply = header + explanation
+    full_reply = header + _escape_markdown(explanation)
 
     # Build optional corpus-examples block.
     corpus_block = ''
