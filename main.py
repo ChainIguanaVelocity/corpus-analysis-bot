@@ -1152,7 +1152,7 @@ def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
 
 def _escape_markdown(text: str) -> str:
     """Escape special Markdown characters to prevent parse errors."""
-    return re.sub(r'([_*\[\]()~`>#+=|{}.!-])', r'\\\1', text)
+    return re.sub(r'([_*\[\]()~`>#+=|{}.!])', r'\\\1', text)
 
 
 def _is_owner(message: telebot.types.Message) -> bool:
