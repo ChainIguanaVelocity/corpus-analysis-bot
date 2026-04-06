@@ -1953,8 +1953,9 @@ def _search_myth_corpora(query_text: str, max_results: int = 10) -> list[tuple[s
 
 
 def _do_myth_search(message: telebot.types.Message, myth_text: str) -> None:
-    """Core myth-search logic: find semantic matches in Shahnameh / Itihasa."""
+    """Core myth-search logic: find matches in Shahnameh / Itihasa and analyse with Yandex GPT."""
     user_id = message.from_user.id
+    chat_id = message.chat.id
     logger.info('[/myth_search] Поиск для user_id=%s, текст=%d симв.', user_id, len(myth_text))
 
     if not _SHAHNAMEH_AVAILABLE and not _ITIHASA_AVAILABLE:
@@ -1969,31 +1970,96 @@ def _do_myth_search(message: telebot.types.Message, myth_text: str) -> None:
     matches = _search_myth_corpora(myth_text)
     logger.info('[/myth_search] Найдено %d совпадений для user_id=%s', len(matches), user_id)
 
-    if not matches:
-        bot.reply_to(
-            message,
-            '🔍 Семантических совпадений в корпусах мифов не найдено.\n'
-            'Попробуйте ввести более развёрнутый текст.',
-        )
-        return
-
-    lines = ['📖 <b>Семантические совпадения в корпусах мифов</b>\n']
-    for i, (sentence, label) in enumerate(matches, 1):
-        display = (
-            sentence if len(sentence) <= SEARCH_SENTENCE_DISPLAY_LEN
-            else sentence[:SEARCH_SENTENCE_DISPLAY_LEN - 3] + '...'
-        )
-        lines.append(f'<b>{i}.</b> <i>[{_escape_html(label)}]</i>\n{_escape_html(display)}\n')
-
     available = []
     if _SHAHNAMEH_AVAILABLE:
         available.append('Shahnameh (shahnameh_en)')
     if _ITIHASA_AVAILABLE:
         available.append('Itihasa (itihasa)')
-    lines.append(f'<i>Корпуса: {", ".join(available)}</i>')
+    corpora_label = ', '.join(available)
 
-    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='HTML',
-                       reply_to_message=message)
+    # Build a corpus-passages block to show as supplementary output and pass to the LLM.
+    passages_block = ''
+    if matches:
+        lines = ['\n\n📖 <b>Фрагменты из корпусов:</b>']
+        for i, (sentence, label) in enumerate(matches, 1):
+            display = (
+                sentence if len(sentence) <= SEARCH_SENTENCE_DISPLAY_LEN
+                else sentence[:SEARCH_SENTENCE_DISPLAY_LEN - 3] + '...'
+            )
+            lines.append(f'  <b>{i}.</b> <i>[{_escape_html(label)}]</i> {_escape_html(display)}')
+        lines.append(f'\n<i>Корпуса: {_escape_html(corpora_label)}</i>')
+        passages_block = '\n'.join(lines)
+
+    # --- AI analysis via Yandex GPT ---
+    if not yandex_llm.available:
+        # Graceful fallback: show raw corpus matches without AI commentary.
+        if not matches:
+            bot.reply_to(
+                message,
+                '🔍 Совпадений в корпусах мифов не найдено.\n'
+                'Попробуйте ввести более развёрнутый текст.',
+            )
+            return
+        header = f'📖 <b>Совпадения в корпусах мифов</b>\n<i>Корпуса: {_escape_html(corpora_label)}</i>\n'
+        _send_long_message(chat_id, header + passages_block, parse_mode='HTML',
+                           reply_to_message=message)
+        bot.send_message(
+            chat_id,
+            '⚠️ Анализ ИИ недоступен: задайте <b>YANDEX_IAM_TOKEN</b> или '
+            '<b>YANDEX_API_KEY</b> и <b>YANDEX_FOLDER_ID</b> в файле <code>.env</code>.',
+            parse_mode='HTML',
+        )
+        return
+
+    # Build corpus context string for the LLM prompt.
+    if matches:
+        passages_for_prompt = '\n'.join(
+            f'[{label}] {sentence}' for sentence, label in matches
+        )
+        corpus_context = (
+            f'\n\nРелевантные фрагменты из корпусов ({corpora_label}):\n{passages_for_prompt}'
+        )
+    else:
+        corpus_context = f'\n\nВ корпусах ({corpora_label}) прямых совпадений по ключевым словам не найдено.'
+
+    system_prompt = (
+        'Ты — эксперт по сравнительной мифологии, специализирующийся на персидском эпосе '
+        '"Шахнаме" и санскритских эпосах "Махабхарата" и "Рамаяна". '
+        'Отвечай на русском языке. Структурируй ответ по пронумерованным пунктам.'
+    )
+    user_prompt = (
+        f'Пользователь предоставил следующий текст мифа:\n\n«{myth_text}»'
+        f'{corpus_context}\n\n'
+        'Проведи семантический анализ и найди параллели:\n'
+        '1) Основные мифологические мотивы и образы в тексте пользователя\n'
+        '2) Семантические совпадения с фрагментами из корпусов (если они есть)\n'
+        '3) Параллели в сюжетах, персонажах или символике между этим текстом и '
+        '"Шахнаме" / "Итихасой"\n'
+        '4) Возможное культурное или историческое родство мотивов'
+    )
+
+    bot.send_message(chat_id, '⏳ Анализирую мифологические параллели...')
+    try:
+        ai_analysis = yandex_llm.complete(system_prompt, user_prompt, max_tokens=3000)
+    except RuntimeError as exc:
+        logger.error('[/myth_search] Ошибка LLM для user_id=%s: %s', user_id, exc)
+        bot.send_message(chat_id, f'❌ Не удалось выполнить анализ ИИ: {_escape_html(str(exc))}',
+                         parse_mode='HTML')
+        return
+
+    logger.info('[/myth_search] ИИ-анализ получен для user_id=%s (%d симв.)',
+                user_id, len(ai_analysis))
+
+    header = '🤖 <b>Семантический анализ мифа (Яндекс ИИ):</b>\n\n'
+    full_reply = header + _escape_html(ai_analysis)
+
+    if len(full_reply) + len(passages_block) <= TELEGRAM_MAX_MESSAGE_LEN:
+        _send_long_message(chat_id, full_reply + passages_block, parse_mode='HTML',
+                           reply_to_message=message)
+    else:
+        _send_long_message(chat_id, full_reply, parse_mode='HTML', reply_to_message=message)
+        if passages_block:
+            _send_long_message(chat_id, passages_block.strip(), parse_mode='HTML')
 
 
 def _receive_myth_search_text(message: telebot.types.Message) -> None:
@@ -2009,7 +2075,7 @@ def _receive_myth_search_text(message: telebot.types.Message) -> None:
 
 @bot.message_handler(commands=['myth_search'])
 def myth_search(message: telebot.types.Message) -> None:
-    """/myth_search <text> — find token-overlap matches for a myth in Shahnameh and Itihasa corpora."""
+    """/myth_search <text> — AI-powered semantic analysis of a myth against Shahnameh and Itihasa corpora."""
     logger.info('[/myth_search] user_id=%s', message.from_user.id)
     parts = message.text.split(maxsplit=1)
     if len(parts) > 1:
