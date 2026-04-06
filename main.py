@@ -1206,7 +1206,7 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
 
-    bot.send_message(chat_id, reply, parse_mode='Markdown')
+    _send_long_message(chat_id, reply, parse_mode='Markdown')
     logger.info('[Buffer] Результаты анализа отправлены (user_id=%s)', user_id)
 
 
@@ -1230,6 +1230,77 @@ def _receive_corpus_name(message: telebot.types.Message, user_id: int,
                            json.dumps({'stats': result['stats'], 'frequency': result.get('frequency', {})}))
     logger.info('[Buffer] Корпус "%s" успешно сохранён в общий корпус (запрос от user_id=%s)', name, user_id)
     bot.reply_to(message, f'✅ Корпус *{_escape_markdown(name)}* сохранён!', parse_mode='Markdown')
+
+# ---------------------------------------------------------------------------
+# Message-splitting helpers
+# ---------------------------------------------------------------------------
+
+def _split_message(text: str, max_len: int = TELEGRAM_MAX_MESSAGE_LEN) -> list[str]:
+    """Split *text* into chunks of at most *max_len* characters.
+
+    Tries to break at double newlines, then single newlines, then spaces,
+    falling back to a hard character-boundary split as a last resort.
+    Returns a list with at least one element.
+    """
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    while len(text) > max_len:
+        # Prefer breaking at a double newline.
+        split_pos = text.rfind('\n\n', 0, max_len)
+        if split_pos > 0:
+            chunks.append(text[:split_pos])
+            text = text[split_pos + 2:]
+            continue
+        # Fall back to a single newline.
+        split_pos = text.rfind('\n', 0, max_len)
+        if split_pos > 0:
+            chunks.append(text[:split_pos])
+            text = text[split_pos + 1:]
+            continue
+        # Fall back to a space.
+        split_pos = text.rfind(' ', 0, max_len)
+        if split_pos > 0:
+            chunks.append(text[:split_pos])
+            text = text[split_pos + 1:]
+            continue
+        # Hard split as a last resort.
+        chunks.append(text[:max_len])
+        text = text[max_len:]
+
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+def _send_long_message(
+    chat_id: int,
+    text: str,
+    parse_mode: str | None = None,
+    *,
+    reply_to_message: telebot.types.Message | None = None,
+    reply_markup=None,
+) -> None:
+    """Send *text* to *chat_id*, splitting it into chunks when it exceeds Telegram's limit.
+
+    If *reply_to_message* is provided the first chunk is sent as a reply to that
+    message; all subsequent chunks are sent as plain messages.  *reply_markup* is
+    attached to the last chunk so that action buttons always appear at the bottom.
+    """
+    chunks = _split_message(text)
+    for i, chunk in enumerate(chunks):
+        is_last = i == len(chunks) - 1
+        kwargs: dict = {}
+        if parse_mode:
+            kwargs['parse_mode'] = parse_mode
+        if is_last and reply_markup is not None:
+            kwargs['reply_markup'] = reply_markup
+        if i == 0 and reply_to_message is not None:
+            bot.reply_to(reply_to_message, chunk, **kwargs)
+        else:
+            bot.send_message(chat_id, chunk, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Bot handlers  (previously bot.py)
@@ -1340,7 +1411,7 @@ def analyze(message: telebot.types.Message) -> None:
         reply += f'  {word}: {count}\n'
 
     logger.info('[/analyze] Результаты отправлены user_id=%s', user_id)
-    bot.reply_to(message, reply, parse_mode='Markdown')
+    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
 
 
 @bot.message_handler(commands=['frequency'])
@@ -1365,7 +1436,7 @@ def frequency(message: telebot.types.Message) -> None:
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
     logger.info('[/frequency] Отправка топ-%d слов для user_id=%s', len(top), user_id)
-    bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
+    _send_long_message(message.chat.id, ''.join(lines), parse_mode='Markdown', reply_to_message=message)
 
 
 @bot.message_handler(commands=['wordcloud'])
@@ -1415,7 +1486,7 @@ def stats(message: telebot.types.Message) -> None:
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
     logger.info('[/stats] Статистика отправлена user_id=%s', user_id)
-    bot.reply_to(message, reply, parse_mode='Markdown')
+    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
 
 
 @bot.message_handler(commands=['corpus'])
@@ -1430,7 +1501,7 @@ def corpus(message: telebot.types.Message) -> None:
         f'Отправьте любое текстовое сообщение, чтобы добавить его в корпус.'
     )
     logger.info('[/corpus] Статистика отправлена user_id=%s: текстов=%s', message.from_user.id, corpus_stats['count'])
-    bot.reply_to(message, reply, parse_mode='Markdown')
+    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
 
 
 def _send_corpus_record(message: telebot.types.Message, name: str, record: dict) -> None:
@@ -1438,12 +1509,8 @@ def _send_corpus_record(message: telebot.types.Message, name: str, record: dict)
     text = record['combined_text']
     created_at = record['created_at']
     header = f'📄 *Корпус: {_escape_markdown(name)}*\n_Сохранён: {_escape_markdown(str(created_at))}_\n\n'
-    if len(header) + len(text) <= 4096:
-        bot.reply_to(message, header + text, parse_mode='Markdown')
-    else:
-        bot.reply_to(message, header, parse_mode='Markdown')
-        for i in range(0, len(text), 4096):
-            bot.send_message(message.chat.id, text[i:i + 4096])
+    _send_long_message(message.chat.id, header + text, parse_mode='Markdown',
+                       reply_to_message=message)
     logger.info('[/load] Текст корпуса "%s" отправлен user_id=%s (%d симв.)',
                 name, message.from_user.id, len(text))
 
@@ -1617,7 +1684,8 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
             )
         )
 
-    bot.reply_to(message, reply, parse_mode='Markdown', reply_markup=markup)
+    _send_long_message(message.chat.id, reply, parse_mode='Markdown',
+                       reply_to_message=message, reply_markup=markup)
 
 
 def _receive_search_word(message: telebot.types.Message) -> None:
@@ -1684,7 +1752,8 @@ def _do_morph(message: telebot.types.Message, word: str) -> None:
         if i < len(info_list):
             lines.append('')
     logger.info('[/morph] Результат морфоанализа отправлен user_id=%s', user_id)
-    bot.reply_to(message, '\n'.join(lines), parse_mode='Markdown')
+    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='Markdown',
+                       reply_to_message=message)
 
 
 def _receive_morph_word(message: telebot.types.Message) -> None:
@@ -1747,7 +1816,8 @@ def morph_stats(message: telebot.types.Message) -> None:
     lines.append(f'\n_Всего токенов проанализировано: {total}_')
     logger.info('[/morph_stats] POS-статистика отправлена user_id=%s (%d категорий)',
                 user_id, len(pos_dist))
-    bot.reply_to(message, '\n'.join(lines), parse_mode='Markdown')
+    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='Markdown',
+                       reply_to_message=message)
 
 
 @bot.message_handler(commands=['morph_freq'])
@@ -1783,7 +1853,8 @@ def morph_freq(message: telebot.types.Message) -> None:
     lines.append(f'\n_Всего токенов: {total}, уникальных форм: {len(gramm_dist)}_')
     logger.info('[/morph_freq] Грамматические формы отправлены user_id=%s (%d форм)',
                 user_id, len(gramm_dist))
-    bot.reply_to(message, '\n'.join(lines), parse_mode='Markdown')
+    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='Markdown',
+                       reply_to_message=message)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srch:'))
@@ -1889,16 +1960,7 @@ def search_show_context(call: telebot.types.CallbackQuery) -> None:
     )
 
     bot.answer_callback_query(call.id)
-    if len(header) + len(context_text) <= TELEGRAM_MAX_MESSAGE_LEN:
-        bot.send_message(
-            call.message.chat.id,
-            header + context_text,
-            parse_mode='Markdown',
-        )
-    else:
-        bot.send_message(call.message.chat.id, header, parse_mode='Markdown')
-        for i in range(0, len(context_text), TELEGRAM_MAX_MESSAGE_LEN):
-            bot.send_message(call.message.chat.id, context_text[i:i + TELEGRAM_MAX_MESSAGE_LEN])
+    _send_long_message(call.message.chat.id, header + context_text, parse_mode='Markdown')
     logger.info('[callback/srch_ctx] Контекст отправлен (user_id=%s, текст=%d, предл.=%d)',
                 user_id, text_idx, sent_idx)
 
@@ -1935,12 +1997,7 @@ def search_show_full_text(call: telebot.types.CallbackQuery) -> None:
     header = title_line + '📕 *Полный текст*\n\n'
 
     bot.answer_callback_query(call.id)
-    if len(header) + len(text) <= TELEGRAM_MAX_MESSAGE_LEN:
-        bot.send_message(call.message.chat.id, header + text, parse_mode='Markdown')
-    else:
-        bot.send_message(call.message.chat.id, header, parse_mode='Markdown')
-        for i in range(0, len(text), TELEGRAM_MAX_MESSAGE_LEN):
-            bot.send_message(call.message.chat.id, text[i:i + TELEGRAM_MAX_MESSAGE_LEN])
+    _send_long_message(call.message.chat.id, header + text, parse_mode='Markdown')
     logger.info('[callback/srch_full] Полный текст отправлен (user_id=%s, текст=%d)',
                 user_id, text_idx)
 
@@ -2014,10 +2071,7 @@ def button_analyze(message: telebot.types.Message) -> None:
     )
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
-    bot.reply_to(message, reply, parse_mode='Markdown')
-
-
-@bot.message_handler(func=lambda m: m.text == '📈 Частота')
+    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
 def button_frequency(message: telebot.types.Message) -> None:
     """Handle '📈 Частота' button – show word frequencies for the user's corpus."""
     logger.info('[Button/📈] user_id=%s', message.from_user.id)
@@ -2035,7 +2089,8 @@ def button_frequency(message: telebot.types.Message) -> None:
     lines = ['📊 *Частота слов корпуса:*\n\n']
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
-    bot.reply_to(message, ''.join(lines), parse_mode='Markdown')
+    _send_long_message(message.chat.id, ''.join(lines), parse_mode='Markdown',
+                       reply_to_message=message)
 
 
 @bot.message_handler(func=lambda m: m.text == '☁️ Облако')
@@ -2078,7 +2133,7 @@ def button_stats(message: telebot.types.Message) -> None:
         f'  • Средняя длина слова: {s["avg_word_length"]:.2f}\n'
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
-    bot.reply_to(message, reply, parse_mode='Markdown')
+    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
 
 
 @bot.message_handler(func=lambda m: m.text == '📚 Корпус')
@@ -2096,7 +2151,7 @@ def button_corpus(message: telebot.types.Message) -> None:
         f'Используйте /collect или кнопку 🔄 Автосбор, чтобы включить/выключить автоматическое '
         f'сохранение текстовых сообщений в корпус.'
     )
-    bot.reply_to(message, reply, parse_mode='Markdown')
+    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
 
 
 @bot.message_handler(func=lambda m: m.text == '📂 Загрузить')
@@ -2321,8 +2376,8 @@ def _receive_yai_translate_text(message: telebot.types.Message,
                 if info['features']:
                     lines.append(f'  Признаки: {_escape_markdown(", ".join(info["features"]))}')
             morph_msg = '\n'.join(lines)
-            if len(morph_msg) <= TELEGRAM_MAX_MESSAGE_LEN:
-                bot.send_message(chat_id, morph_msg, parse_mode='Markdown')
+            if morph_msg:
+                _send_long_message(chat_id, morph_msg, parse_mode='Markdown')
 
 
 def _send_yai_translation_result(chat_id: int, original: str, translated: str,
@@ -2342,12 +2397,7 @@ def _send_yai_translation_result(chat_id: int, original: str, translated: str,
     header = f'🤖 *Перевод {kind_label}* ({direction_label}):\n\n'
     body = f'📝 Оригинал: _{_escape_markdown(original)}_\n🔄 Перевод: *{_escape_markdown(translated)}*'
     full_reply = header + body
-
-    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
-        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
-    else:
-        bot.send_message(chat_id, header, parse_mode='Markdown')
-        bot.send_message(chat_id, translated)
+    _send_long_message(chat_id, full_reply, parse_mode='Markdown')
 
 
 @bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_EXPLAIN)
@@ -2493,14 +2543,9 @@ def _send_yai_explanation_result(
     if len(full_reply) + len(corpus_block) <= TELEGRAM_MAX_MESSAGE_LEN:
         bot.send_message(chat_id, full_reply + corpus_block, parse_mode='Markdown')
     else:
-        # Send header + explanation first; corpus examples as a follow-up if they fit.
-        if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
-            bot.send_message(chat_id, full_reply, parse_mode='Markdown')
-        else:
-            bot.send_message(chat_id, header, parse_mode='Markdown')
-            bot.send_message(chat_id, explanation)
-        if corpus_block and len(corpus_block) <= TELEGRAM_MAX_MESSAGE_LEN:
-            bot.send_message(chat_id, corpus_block.strip(), parse_mode='Markdown')
+        _send_long_message(chat_id, full_reply, parse_mode='Markdown')
+        if corpus_block:
+            _send_long_message(chat_id, corpus_block.strip(), parse_mode='Markdown')
 
 
 @bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_ANALYZE)
@@ -2562,12 +2607,7 @@ def _receive_yai_analyze_text(message: telebot.types.Message) -> None:
 
     header = '🎯 *Анализ текста (Яндекс ИИ):*\n\n'
     full_reply = header + analysis
-    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
-        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
-    else:
-        bot.send_message(chat_id, header, parse_mode='Markdown')
-        for i in range(0, len(analysis), TELEGRAM_MAX_MESSAGE_LEN):
-            bot.send_message(chat_id, analysis[i:i + TELEGRAM_MAX_MESSAGE_LEN])
+    _send_long_message(chat_id, full_reply, parse_mode='Markdown')
     logger.info('[YAI/analyze] Анализ отправлен user_id=%s', user_id)
 
 
@@ -2645,12 +2685,7 @@ def _receive_translate_text(message: telebot.types.Message, source_lang: str,
         direction_label = f'{source_lang} → {target_lang}'
     header = f'🌐 *Перевод* ({direction_label}):\n\n'
     full_reply = header + translated
-    if len(full_reply) <= TELEGRAM_MAX_MESSAGE_LEN:
-        bot.send_message(chat_id, full_reply, parse_mode='Markdown')
-    else:
-        bot.send_message(chat_id, header, parse_mode='Markdown')
-        for i in range(0, len(translated), TELEGRAM_MAX_MESSAGE_LEN):
-            bot.send_message(chat_id, translated[i:i + TELEGRAM_MAX_MESSAGE_LEN])
+    _send_long_message(chat_id, full_reply, parse_mode='Markdown')
     logger.info('[Translator] Перевод отправлен user_id=%s', user_id)
 
 
