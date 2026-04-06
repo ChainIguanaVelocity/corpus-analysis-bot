@@ -2072,6 +2072,9 @@ def button_analyze(message: telebot.types.Message) -> None:
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
     _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
+
+
+@bot.message_handler(func=lambda m: m.text == '📈 Частота')
 def button_frequency(message: telebot.types.Message) -> None:
     """Handle '📈 Частота' button – show word frequencies for the user's corpus."""
     logger.info('[Button/📈] user_id=%s', message.from_user.id)
