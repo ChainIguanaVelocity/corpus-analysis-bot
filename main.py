@@ -174,6 +174,16 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS mythological_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_text TEXT NOT NULL,
+                target_text TEXT NOT NULL,
+                similarity_score INTEGER NOT NULL DEFAULT 0,
+                analysis_result TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
         logger.info('[DB] Схема готова')
 
     def close_connection(self):
@@ -493,6 +503,43 @@ class Database:
             return cur.lastrowid
         except Error as e:
             logger.error('[DB] save_yandex_ai_analysis error: %s', e)
+            return None
+
+    def save_mythological_pair(self, source_text: str, target_text: str,
+                               similarity_score: int, analysis_result: str) -> int | None:
+        """Save a mythological pair analysis result. Returns the new row id."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'INSERT INTO mythological_pairs'
+                '(source_text, target_text, similarity_score, analysis_result) '
+                'VALUES(?, ?, ?, ?)',
+                (source_text, target_text, similarity_score, analysis_result),
+            )
+            self.conn.commit()
+            logger.info('[DB] Мифологическая пара сохранена, row_id=%s', cur.lastrowid)
+            return cur.lastrowid
+        except Error as e:
+            logger.error('[DB] save_mythological_pair error: %s', e)
+            return None
+
+    def get_mythological_pair_cache(self, source_text: str) -> tuple[str, str, int] | None:
+        """Return cached (target_text, analysis_result, similarity_score) for *source_text*, or None."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT target_text, analysis_result, similarity_score '
+                'FROM mythological_pairs WHERE source_text=? '
+                'ORDER BY created_at DESC LIMIT 1',
+                (source_text,),
+            )
+            row = cur.fetchone()
+            if row:
+                logger.info('[DB] Кеш мифологических пар найден для "%s"', source_text[:50])
+                return row[0], row[1], row[2]
+            return None
+        except Error as e:
+            logger.error('[DB] get_mythological_pair_cache error: %s', e)
             return None
 
     def import_texts_from_directory(self, user_id: int, texts_dir: str = 'texts',
@@ -1326,6 +1373,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('🔬 Морфо'),
         telebot.types.KeyboardButton('🌐 Переводчик'),
         telebot.types.KeyboardButton('🤖 Яндекс ИИ'),
+        telebot.types.KeyboardButton('🧬 Пары мифов'),
     )
 
     bot.reply_to(
@@ -1351,12 +1399,17 @@ def start(message: telebot.types.Message) -> None:
         '  /morph &lt;слово&gt; — морфологический анализ слова\n'
         '  /morph_stats — статистика частей речи в корпусе\n'
         '  /morph_freq — частота грамматических форм в корпусе\n'
-        '  /translate [язык] — перевести корпус на указанный язык\n\n'
+        '  /translate [язык] — перевести корпус на указанный язык\n'
+        '  /semantic_pairs [сюжет] — поиск семантических пар мифологических сюжетов\n\n'
         '🤖 <b>Яндекс ИИ</b> — умный перевод и анализ текста без команд:\n'
         '  Нажмите кнопку <b>🤖 Яндекс ИИ</b> и выберите операцию:\n'
         '  ✨ Перевести слово/предложение (Осетинский ↔ Русский)\n'
         '  📚 Объяснить слово\n'
-        '  🎯 Анализировать текст',
+        '  🎯 Анализировать текст\n\n'
+        '🧬 <b>Пары мифов</b> — поиск семантических параллелей мифологических сюжетов:\n'
+        '  Нажмите кнопку <b>🧬 Пары мифов</b> или выполните /semantic_pairs\n'
+        '  Введите название или описание мифологического сюжета\n'
+        '  Получите анализ структуры и список семантически схожих сюжетов',
         parse_mode='HTML',
         reply_markup=markup,
     )
@@ -2612,6 +2665,151 @@ def _receive_yai_analyze_text(message: telebot.types.Message) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Semantic pairs of mythological plots
+# ---------------------------------------------------------------------------
+
+@bot.message_handler(commands=['semantic_pairs'])
+def cmd_semantic_pairs(message: telebot.types.Message) -> None:
+    """Prompt the user to enter a mythological plot for semantic pair search."""
+    logger.info('[/semantic_pairs] user_id=%s', message.from_user.id)
+    # If a plot name was passed inline, process it immediately.
+    parts = (message.text or '').split(maxsplit=1)
+    if len(parts) > 1 and parts[1].strip():
+        message.text = parts[1].strip()
+        _receive_semantic_pairs_text(message)
+        return
+    sent = bot.reply_to(
+        message,
+        '🧬 Введите название или описание мифологического сюжета\n'
+        '(например: <b>Похищение огня</b>, <b>Нартский цикл</b>):',
+        parse_mode='HTML',
+    )
+    bot.register_next_step_handler(sent, _receive_semantic_pairs_text)
+
+
+@bot.message_handler(func=lambda m: m.text == '🧬 Пары мифов')
+def button_semantic_pairs(message: telebot.types.Message) -> None:
+    """Handle '🧬 Пары мифов' button – prompt for a mythological plot."""
+    logger.info('[Button/🧬] user_id=%s', message.from_user.id)
+    sent = bot.send_message(
+        message.chat.id,
+        '🧬 Введите название или описание мифологического сюжета\n'
+        '(например: <b>Похищение огня</b>, <b>Нартский цикл</b>):',
+        parse_mode='HTML',
+    )
+    bot.register_next_step_handler(sent, _receive_semantic_pairs_text)
+
+
+def _receive_semantic_pairs_text(message: telebot.types.Message) -> None:
+    """Next-step handler: finds semantic pairs for the mythological plot entered by the user."""
+    import json as _json
+
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    plot = (message.text or '').strip()
+
+    if not plot or plot.startswith('/'):
+        logger.info('[SemanticPairs] Пустой ввод от user_id=%s, поиск отменён', user_id)
+        bot.reply_to(message, '❌ Сюжет не введён. Поиск отменён.')
+        return
+
+    logger.info('[SemanticPairs] Поиск пар для "%s" (user_id=%s)', plot[:60], user_id)
+
+    if not yandex_llm.available:
+        bot.send_message(
+            chat_id,
+            '⚠️ Функция поиска пар недоступна: задайте <b>YANDEX_IAM_TOKEN</b> или '
+            '<b>YANDEX_API_KEY</b> и <b>YANDEX_FOLDER_ID</b> в файле <code>.env</code>.',
+            parse_mode='HTML',
+        )
+        return
+
+    # Check cache first.
+    cached = db.get_mythological_pair_cache(plot)
+    if cached:
+        target_text, analysis_result, similarity_score = cached
+        logger.info('[SemanticPairs] Найдено в кеше для "%s"', plot[:60])
+        # analysis_result is stored as JSON; extract the analysis text if possible.
+        try:
+            cached_data = _json.loads(analysis_result)
+            display_analysis = cached_data.get('analysis', analysis_result)
+        except Exception:
+            display_analysis = analysis_result
+        _send_semantic_pairs_result(chat_id, plot, target_text, similarity_score,
+                                    display_analysis, from_cache=True)
+        return
+
+    system_prompt = (
+        'Ты — эксперт по сравнительной мифологии и семантическому анализу мифологических сюжетов. '
+        'Отвечай на русском языке. Будь структурированным и информативным.'
+    )
+    user_prompt = (
+        f'Проанализируй мифологический сюжет: «{plot}»\n\n'
+        'Выполни следующие задачи:\n\n'
+        '1) АНАЛИЗ СТРУКТУРЫ СЮЖЕТА:\n'
+        '   - Главные персонажи и их архетипы\n'
+        '   - Основные мотивы и события\n'
+        '   - Тип конфликта\n\n'
+        '2) СЕМАНТИЧЕСКИЕ ПАРАЛЛЕЛИ:\n'
+        '   Найди 3–5 семантически схожих сюжетов из мировой мифологии.\n'
+        '   Для каждого параллельного сюжета укажи:\n'
+        '   - Название и культура происхождения\n'
+        '   - Ключевые точки сходства\n'
+        '   - Процент семантического сходства (0–100)\n\n'
+        '3) ВЫВОД:\n'
+        '   Укажи наиболее близкий параллельный сюжет и общий процент сходства.\n\n'
+        'В конце ответа обязательно добавь две строки в формате:\n'
+        'CLOSEST_PLOT: <название наиболее близкого сюжета>\n'
+        'SIMILARITY_SCORE: <число от 0 до 100>'
+    )
+
+    bot.send_message(chat_id, '⏳ Ищу семантические пары...')
+    try:
+        analysis = yandex_llm.complete(system_prompt, user_prompt, max_tokens=3000)
+    except RuntimeError as exc:
+        logger.error('[SemanticPairs] Ошибка LLM для user_id=%s: %s', user_id, exc)
+        bot.send_message(chat_id, f'❌ Не удалось выполнить поиск: {exc}')
+        return
+
+    # Extract structured markers from the response.
+    similarity_score = 0
+    target_text = plot  # fallback: use source plot if the model omits the marker
+    for line in reversed(analysis.splitlines()):
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith('SIMILARITY_SCORE:'):
+            try:
+                raw = stripped.split(':', 1)[1].strip().rstrip('%').split()[0]
+                similarity_score = max(0, min(100, int(raw)))
+            except (ValueError, IndexError):
+                pass
+        elif upper.startswith('CLOSEST_PLOT:'):
+            closest = stripped.split(':', 1)[1].strip()
+            if closest:
+                target_text = closest
+
+    analysis_json = _json.dumps({'plot': plot, 'analysis': analysis}, ensure_ascii=False)
+    db.save_mythological_pair(plot, target_text, similarity_score, analysis_json)
+
+    _send_semantic_pairs_result(chat_id, plot, target_text, similarity_score,
+                                analysis, from_cache=False)
+    logger.info('[SemanticPairs] Результат отправлен user_id=%s', user_id)
+
+
+def _send_semantic_pairs_result(chat_id: int, plot: str, target_text: str,
+                                 similarity_score: int, analysis: str,
+                                 *, from_cache: bool) -> None:
+    """Format and send the semantic pairs result to the chat."""
+    cache_note = ' <i>(из кеша)</i>' if from_cache else ''
+    header = (
+        f'🧬 <b>Семантические пары мифологических сюжетов</b>{cache_note}\n\n'
+        f'🔍 <b>Сюжет:</b> {_escape_html(plot)}\n'
+        f'📊 <b>Максимальное сходство:</b> {similarity_score}%\n\n'
+    )
+    _send_long_message(chat_id, header + _escape_html(analysis), parse_mode='HTML')
+
+
+# ---------------------------------------------------------------------------
 # Translation helpers and command handlers
 # ---------------------------------------------------------------------------
 
@@ -2797,7 +2995,8 @@ def _register_commands() -> None:
         telebot.types.BotCommand('morph',        'Морфологический анализ слова'),
         telebot.types.BotCommand('morph_stats',  'Статистика частей речи в корпусе'),
         telebot.types.BotCommand('morph_freq',   'Частота грамматических форм в корпусе'),
-        telebot.types.BotCommand('translate',    'Перевести корпус на указанный язык'),
+        telebot.types.BotCommand('translate',       'Перевести корпус на указанный язык'),
+        telebot.types.BotCommand('semantic_pairs', 'Поиск семантических пар мифологических сюжетов'),
     ]
     bot.set_my_commands(commands)
     logger.info('Команды меню зарегистрированы (%d команд)', len(commands))
