@@ -1150,9 +1150,9 @@ def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
     return form5
 
 
-def _escape_markdown(text: str) -> str:
-    """Escape special Markdown characters to prevent parse errors."""
-    return re.sub(r'([_*\[\]()~`>#+=|{}.!])', r'\\\1', text)
+def _escape_html(text: str) -> str:
+    """Escape special HTML characters to prevent parse errors."""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
 def _is_owner(message: telebot.types.Message) -> bool:
@@ -1192,8 +1192,8 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
     n = len(texts)
     msg_form = _ru_plural(n, 'сообщение', 'сообщения', 'сообщений')
     reply = (
-        f'📊 *Анализ {n} {msg_form}*\n\n'
-        f'*Статистика:*\n'
+        f'📊 <b>Анализ {n} {msg_form}</b>\n\n'
+        f'<b>Статистика:</b>\n'
         f'  • Слов (всего): {stats["total_words"]}\n'
         f'  • Уникальных слов: {stats["unique_words"]}\n'
         f'  • Предложений: {stats["sentences"]}\n'
@@ -1201,12 +1201,12 @@ def _flush_user_buffer(user_id: int, chat_id: int) -> None:
         f'  • Лексическое разнообразие: {stats["lexical_diversity"]:.2%}\n'
         f'  • Токенов: {result["tokens_count"]}\n'
         f'  • Уникальных лемм: {result["lemmas_count"]}\n\n'
-        f'*Топ {TOP_WORDS} слов:*\n'
+        f'<b>Топ {TOP_WORDS} слов:</b>\n'
     )
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
 
-    _send_long_message(chat_id, reply, parse_mode='Markdown')
+    _send_long_message(chat_id, reply, parse_mode='HTML')
     logger.info('[Buffer] Результаты анализа отправлены (user_id=%s)', user_id)
 
 
@@ -1229,7 +1229,7 @@ def _receive_corpus_name(message: telebot.types.Message, user_id: int,
     db.save_named_analysis(SHARED_CORPUS_USER_ID, name, combined_text,
                            json.dumps({'stats': result['stats'], 'frequency': result.get('frequency', {})}))
     logger.info('[Buffer] Корпус "%s" успешно сохранён в общий корпус (запрос от user_id=%s)', name, user_id)
-    bot.reply_to(message, f'✅ Корпус *{_escape_markdown(name)}* сохранён!', parse_mode='Markdown')
+    bot.reply_to(message, f'✅ Корпус <b>{_escape_html(name)}</b> сохранён!', parse_mode='HTML')
 
 # ---------------------------------------------------------------------------
 # Message-splitting helpers
@@ -1330,11 +1330,11 @@ def start(message: telebot.types.Message) -> None:
 
     bot.reply_to(
         message,
-        '👋 Добро пожаловать в *Бот анализа корпуса*!\n\n'
+        '👋 Добро пожаловать в <b>Бот анализа корпуса</b>!\n\n'
         'Бот анализирует общий корпус текстов.\n\n'
         'Как пополнить корпус:\n'
         '  Включите автосбор командой /collect (или кнопкой 🔄 Автосбор) — '
-        'по умолчанию он *отключён*. '
+        'по умолчанию он <b>отключён</b>. '
         f'Когда автосбор включён, каждое текстовое сообщение через {COLLECT_WINDOW} '
         f'{_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} '
         'после отправки автоматически сохраняется в общий корпус.\n\n'
@@ -1345,19 +1345,19 @@ def start(message: telebot.types.Message) -> None:
         '  /stats — краткая статистика корпуса\n'
         '  /corpus — размер общего корпуса\n'
         '  /load [название] — найти произведение по названию и получить текст целиком\n'
-        '  /import\\_texts — импортировать .txt файлы из папки texts/\n'
+        '  /import_texts — импортировать .txt файлы из папки texts/\n'
         '  /collect — включить/выключить автосбор текстовых сообщений\n'
-        '  /search <слово> — найти предложения с нужным словом в корпусе\n'
-        '  /morph <слово> — морфологический анализ слова\n'
-        '  /morph\\_stats — статистика частей речи в корпусе\n'
-        '  /morph\\_freq — частота грамматических форм в корпусе\n'
+        '  /search &lt;слово&gt; — найти предложения с нужным словом в корпусе\n'
+        '  /morph &lt;слово&gt; — морфологический анализ слова\n'
+        '  /morph_stats — статистика частей речи в корпусе\n'
+        '  /morph_freq — частота грамматических форм в корпусе\n'
         '  /translate [язык] — перевести корпус на указанный язык\n\n'
-        '🤖 *Яндекс ИИ* — умный перевод и анализ текста без команд:\n'
-        '  Нажмите кнопку *🤖 Яндекс ИИ* и выберите операцию:\n'
+        '🤖 <b>Яндекс ИИ</b> — умный перевод и анализ текста без команд:\n'
+        '  Нажмите кнопку <b>🤖 Яндекс ИИ</b> и выберите операцию:\n'
         '  ✨ Перевести слово/предложение (Осетинский ↔ Русский)\n'
         '  📚 Объяснить слово\n'
         '  🎯 Анализировать текст',
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=markup,
     )
 
@@ -1375,7 +1375,7 @@ def _get_user_corpus_text(message: telebot.types.Message) -> str | None:
             message,
             '📭 Общий корпус пуст. Отправьте несколько текстовых сообщений, '
             'чтобы наполнить его, а затем повторите команду.',
-            parse_mode='Markdown',
+            parse_mode='HTML',
         )
         return None
     return '\n'.join(texts)
@@ -1396,8 +1396,8 @@ def analyze(message: telebot.types.Message) -> None:
     freq = dict(list(result['frequency'].items())[:TOP_WORDS])
 
     reply = (
-        f'📊 *Результаты анализа корпуса*\n\n'
-        f'*Статистика:*\n'
+        f'📊 <b>Результаты анализа корпуса</b>\n\n'
+        f'<b>Статистика:</b>\n'
         f'  • Слов (всего): {stats["total_words"]}\n'
         f'  • Уникальных слов: {stats["unique_words"]}\n'
         f'  • Предложений: {stats["sentences"]}\n'
@@ -1405,13 +1405,13 @@ def analyze(message: telebot.types.Message) -> None:
         f'  • Лексическое разнообразие: {stats["lexical_diversity"]:.2%}\n'
         f'  • Токенов: {result["tokens_count"]}\n'
         f'  • Уникальных лемм: {result["lemmas_count"]}\n\n'
-        f'*Топ {TOP_WORDS} слов:*\n'
+        f'<b>Топ {TOP_WORDS} слов:</b>\n'
     )
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
 
     logger.info('[/analyze] Результаты отправлены user_id=%s', user_id)
-    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
+    _send_long_message(message.chat.id, reply, parse_mode='HTML', reply_to_message=message)
 
 
 @bot.message_handler(commands=['frequency'])
@@ -1432,11 +1432,11 @@ def frequency(message: telebot.types.Message) -> None:
         return
 
     top = sorted(freq_dict.items(), key=lambda x: x[1], reverse=True)[:20]
-    lines = ['📊 *Частота слов корпуса:*\n\n']
+    lines = ['📊 <b>Частота слов корпуса:</b>\n\n']
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
     logger.info('[/frequency] Отправка топ-%d слов для user_id=%s', len(top), user_id)
-    _send_long_message(message.chat.id, ''.join(lines), parse_mode='Markdown', reply_to_message=message)
+    _send_long_message(message.chat.id, ''.join(lines), parse_mode='HTML', reply_to_message=message)
 
 
 @bot.message_handler(commands=['wordcloud'])
@@ -1478,7 +1478,7 @@ def stats(message: telebot.types.Message) -> None:
     logger.info('[/stats] Подсчёт статистики корпуса (%d симв.) для user_id=%s', len(text), user_id)
     s = analyzer.get_text_stats(text)
     reply = (
-        f'📈 *Статистика корпуса*\n\n'
+        f'📈 <b>Статистика корпуса</b>\n\n'
         f'  • Слов (всего): {s["total_words"]}\n'
         f'  • Уникальных слов: {s["unique_words"]}\n'
         f'  • Предложений: {s["sentences"]}\n'
@@ -1486,7 +1486,7 @@ def stats(message: telebot.types.Message) -> None:
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
     logger.info('[/stats] Статистика отправлена user_id=%s', user_id)
-    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
+    _send_long_message(message.chat.id, reply, parse_mode='HTML', reply_to_message=message)
 
 
 @bot.message_handler(commands=['corpus'])
@@ -1495,21 +1495,21 @@ def corpus(message: telebot.types.Message) -> None:
     logger.info('[/corpus] user_id=%s', message.from_user.id)
     corpus_stats = db.get_corpus_stats(SHARED_CORPUS_USER_ID)
     reply = (
-        f'📚 *Общий корпус*\n\n'
+        f'📚 <b>Общий корпус</b>\n\n'
         f'  • Текстов сохранено: {corpus_stats["count"]}\n'
         f'  • Всего символов: {corpus_stats["total_chars"]}\n\n'
         f'Отправьте любое текстовое сообщение, чтобы добавить его в корпус.'
     )
     logger.info('[/corpus] Статистика отправлена user_id=%s: текстов=%s', message.from_user.id, corpus_stats['count'])
-    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
+    _send_long_message(message.chat.id, reply, parse_mode='HTML', reply_to_message=message)
 
 
 def _send_corpus_record(message: telebot.types.Message, name: str, record: dict) -> None:
     """Send the text of a named corpus record to the user."""
     text = record['combined_text']
     created_at = record['created_at']
-    header = f'📄 *Корпус: {_escape_markdown(name)}*\n_Сохранён: {_escape_markdown(str(created_at))}_\n\n'
-    _send_long_message(message.chat.id, header + text, parse_mode='Markdown',
+    header = f'📄 <b>Корпус: {_escape_html(name)}</b>\n<i>Сохранён: {_escape_html(str(created_at))}</i>\n\n'
+    _send_long_message(message.chat.id, header + text, parse_mode='HTML',
                        reply_to_message=message)
     logger.info('[/load] Текст корпуса "%s" отправлен user_id=%s (%d симв.)',
                 name, message.from_user.id, len(text))
@@ -1529,21 +1529,21 @@ def _receive_load_name(message: telebot.types.Message) -> None:
     results = db.search_named_analyses(user_id, query)
     if not results:
         bot.reply_to(message,
-                     f'❌ Произведение по запросу *{_escape_markdown(query)}* не найдено.',
-                     parse_mode='Markdown')
+                     f'❌ Произведение по запросу <b>{_escape_html(query)}</b> не найдено.',
+                     parse_mode='HTML')
         return
     if len(results) == 1:
         record = results[0]
         _send_corpus_record(message, record['name'], record)
         return
     # Multiple matches — list them and ask the user to be more specific
-    names_list = '\n'.join(f'  • {_escape_markdown(r["name"])}' for r in results)
+    names_list = '\n'.join(f'  • {_escape_html(r["name"])}' for r in results)
     bot.reply_to(
         message,
-        f'🔍 Найдено несколько произведений по запросу *{_escape_markdown(query)}*:\n\n'
+        f'🔍 Найдено несколько произведений по запросу <b>{_escape_html(query)}</b>:\n\n'
         f'{names_list}\n\n'
         f'Уточните название и попробуйте снова.',
-        parse_mode='Markdown',
+        parse_mode='HTML',
     )
 
 
@@ -1564,21 +1564,21 @@ def load_corpus(message: telebot.types.Message) -> None:
     if not results:
         bot.reply_to(
             message,
-            f'❌ Произведение по запросу *{_escape_markdown(query)}* не найдено.',
-            parse_mode='Markdown',
+            f'❌ Произведение по запросу <b>{_escape_html(query)}</b> не найдено.',
+            parse_mode='HTML',
         )
         return
     if len(results) == 1:
         record = results[0]
         _send_corpus_record(message, record['name'], record)
         return
-    names_list = '\n'.join(f'  • {_escape_markdown(r["name"])}' for r in results)
+    names_list = '\n'.join(f'  • {_escape_html(r["name"])}' for r in results)
     bot.reply_to(
         message,
-        f'🔍 Найдено несколько произведений по запросу *{_escape_markdown(query)}*:\n\n'
+        f'🔍 Найдено несколько произведений по запросу <b>{_escape_html(query)}</b>:\n\n'
         f'{names_list}\n\n'
         f'Уточните название и попробуйте снова.',
-        parse_mode='Markdown',
+        parse_mode='HTML',
     )
 
 
@@ -1658,24 +1658,24 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
         if word_norm in _OSSETIAN_STOPWORDS:
             bot.reply_to(
                 message,
-                f'🔍 Слово *{_escape_markdown(word)}* является стоп-словом и встречается очень часто.\n'
+                f'🔍 Слово <b>{_escape_html(word)}</b> является стоп-словом и встречается очень часто.\n'
                 f'Попробуйте поиск другого слова.',
-                parse_mode='Markdown',
+                parse_mode='HTML',
             )
         else:
             bot.reply_to(
                 message,
-                f'🔍 Слово *{_escape_markdown(word)}* не найдено в вашем корпусе.',
-                parse_mode='Markdown',
+                f'🔍 Слово <b>{_escape_html(word)}</b> не найдено в вашем корпусе.',
+                parse_mode='HTML',
             )
         return
 
-    reply = f'🔍 *Результаты поиска: "{_escape_markdown(word)}"*\nНайдено предложений: {len(matches)}\n\n'
+    reply = f'🔍 <b>Результаты поиска: "{_escape_html(word)}"</b>\nНайдено предложений: {len(matches)}\n\n'
     markup = telebot.types.InlineKeyboardMarkup()
     for i, (sentence, text_idx, sent_idx, name) in enumerate(matches, 1):
         display = sentence if len(sentence) <= SEARCH_SENTENCE_DISPLAY_LEN else sentence[:SEARCH_SENTENCE_DISPLAY_LEN - 3] + '...'
-        work_label = f'📚 _{_escape_markdown(name)}_\n' if name else ''
-        reply += f'*{i}.* {work_label}{_escape_markdown(display)}\n\n'
+        work_label = f'📚 <i>{_escape_html(name)}</i>\n' if name else ''
+        reply += f'<b>{i}.</b> {work_label}{_escape_html(display)}\n\n'
         callback_data = f'srch:{text_idx}:{sent_idx}'
         markup.add(
             telebot.types.InlineKeyboardButton(
@@ -1684,7 +1684,7 @@ def _do_search(message: telebot.types.Message, word: str) -> None:
             )
         )
 
-    _send_long_message(message.chat.id, reply, parse_mode='Markdown',
+    _send_long_message(message.chat.id, reply, parse_mode='HTML',
                        reply_to_message=message, reply_markup=markup)
 
 
@@ -1735,24 +1735,24 @@ def _do_morph(message: telebot.types.Message, word: str) -> None:
     if not info_list:
         bot.reply_to(
             message,
-            f'🔬 Слово *{_escape_markdown(word)}* не распознано морфологическим анализатором.',
-            parse_mode='Markdown',
+            f'🔬 Слово <b>{_escape_html(word)}</b> не распознано морфологическим анализатором.',
+            parse_mode='HTML',
         )
         return
 
-    lines = [f'🔬 *Морфологический анализ:* {_escape_markdown(word)}\n']
+    lines = [f'🔬 <b>Морфологический анализ:</b> {_escape_html(word)}\n']
     for i, info in enumerate(info_list, 1):
         if len(info_list) > 1:
-            lines.append(f'*Вариант {i}:*')
-        lines.append(f'  Лемма: {_escape_markdown(info["lemma"])}')
-        lines.append(f'  Часть речи: {_escape_markdown(info["pos"])}')
+            lines.append(f'<b>Вариант {i}:</b>')
+        lines.append(f'  Лемма: {_escape_html(info["lemma"])}')
+        lines.append(f'  Часть речи: {_escape_html(info["pos"])}')
         if info['features']:
-            lines.append(f'  Признаки: {_escape_markdown(", ".join(info["features"]))}')
-        lines.append(f'  Граммемы: {_escape_markdown(info["gramm"])}')
+            lines.append(f'  Признаки: {_escape_html(", ".join(info["features"]))}')
+        lines.append(f'  Граммемы: {_escape_html(info["gramm"])}')
         if i < len(info_list):
             lines.append('')
     logger.info('[/morph] Результат морфоанализа отправлен user_id=%s', user_id)
-    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='Markdown',
+    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='HTML',
                        reply_to_message=message)
 
 
@@ -1808,15 +1808,15 @@ def morph_stats(message: telebot.types.Message) -> None:
 
     total = sum(pos_dist.values())
     top_pos = list(pos_dist.items())[:15]
-    lines = ['📊 *Статистика частей речи в корпусе*\n']
+    lines = ['📊 <b>Статистика частей речи в корпусе</b>\n']
     for pos, count in top_pos:
         pct = count / total * 100
-        pos_label = _escape_markdown(pos if pos else '?')
+        pos_label = _escape_html(pos if pos else '?')
         lines.append(f'  {pos_label}: {count} ({pct:.1f}%)')
-    lines.append(f'\n_Всего токенов проанализировано: {total}_')
+    lines.append(f'\n<i>Всего токенов проанализировано: {total}</i>')
     logger.info('[/morph_stats] POS-статистика отправлена user_id=%s (%d категорий)',
                 user_id, len(pos_dist))
-    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='Markdown',
+    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='HTML',
                        reply_to_message=message)
 
 
@@ -1846,14 +1846,14 @@ def morph_freq(message: telebot.types.Message) -> None:
 
     top_forms = list(gramm_dist.items())[:20]
     total = sum(gramm_dist.values())
-    lines = ['📊 *Частота грамматических форм в корпусе* (топ 20)\n']
+    lines = ['📊 <b>Частота грамматических форм в корпусе</b> (топ 20)\n']
     for gramm, count in top_forms:
         pct = count / total * 100
-        lines.append(f'  {_escape_markdown(gramm)}: {count} ({pct:.1f}%)')
-    lines.append(f'\n_Всего токенов: {total}, уникальных форм: {len(gramm_dist)}_')
+        lines.append(f'  {_escape_html(gramm)}: {count} ({pct:.1f}%)')
+    lines.append(f'\n<i>Всего токенов: {total}, уникальных форм: {len(gramm_dist)}</i>')
     logger.info('[/morph_freq] Грамматические формы отправлены user_id=%s (%d форм)',
                 user_id, len(gramm_dist))
-    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='Markdown',
+    _send_long_message(message.chat.id, '\n'.join(lines), parse_mode='HTML',
                        reply_to_message=message)
 
 
@@ -1883,9 +1883,9 @@ def search_open_text_menu(call: telebot.types.CallbackQuery) -> None:
 
     _text, name = texts_with_names[text_idx]
     title_line = (
-        f'📚 *{_escape_markdown(name)}*\n\n'
+        f'📚 <b>{_escape_html(name)}</b>\n\n'
         if name
-        else f'📄 *Текст {text_idx + 1}*\n\n'
+        else f'📄 <b>Текст {text_idx + 1}</b>\n\n'
     )
     menu_text = title_line + 'Выберите режим просмотра:'
     markup = telebot.types.InlineKeyboardMarkup()
@@ -1900,7 +1900,7 @@ def search_open_text_menu(call: telebot.types.CallbackQuery) -> None:
         ),
     )
     bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, menu_text, parse_mode='Markdown', reply_markup=markup)
+    bot.send_message(call.message.chat.id, menu_text, parse_mode='HTML', reply_markup=markup)
     logger.info('[callback/srch] Меню просмотра отправлено (user_id=%s, текст=%d, предл.=%d)',
                 user_id, text_idx, sent_idx)
 
@@ -1950,17 +1950,17 @@ def search_show_context(call: telebot.types.CallbackQuery) -> None:
     context_text = '\n'.join(context_lines)
 
     title_line = (
-        f'📚 *{_escape_markdown(name)}*\n'
+        f'📚 <b>{_escape_html(name)}</b>\n'
         if name
-        else f'📄 *Текст {text_idx + 1}*\n'
+        else f'📄 <b>Текст {text_idx + 1}</b>\n'
     )
     header = (
         title_line
-        + f'📖 *Контекст* (предложение {sent_idx + 1} из {len(sentences)})\n\n'
+        + f'📖 <b>Контекст</b> (предложение {sent_idx + 1} из {len(sentences)})\n\n'
     )
 
     bot.answer_callback_query(call.id)
-    _send_long_message(call.message.chat.id, header + context_text, parse_mode='Markdown')
+    _send_long_message(call.message.chat.id, header + context_text, parse_mode='HTML')
     logger.info('[callback/srch_ctx] Контекст отправлен (user_id=%s, текст=%d, предл.=%d)',
                 user_id, text_idx, sent_idx)
 
@@ -1990,14 +1990,14 @@ def search_show_full_text(call: telebot.types.CallbackQuery) -> None:
 
     text, name = texts_with_names[text_idx]
     title_line = (
-        f'📚 *{_escape_markdown(name)}*\n'
+        f'📚 <b>{_escape_html(name)}</b>\n'
         if name
-        else f'📄 *Текст {text_idx + 1}*\n'
+        else f'📄 <b>Текст {text_idx + 1}</b>\n'
     )
-    header = title_line + '📕 *Полный текст*\n\n'
+    header = title_line + '📕 <b>Полный текст</b>\n\n'
 
     bot.answer_callback_query(call.id)
-    _send_long_message(call.message.chat.id, header + text, parse_mode='Markdown')
+    _send_long_message(call.message.chat.id, header + text, parse_mode='HTML')
     logger.info('[callback/srch_full] Полный текст отправлен (user_id=%s, текст=%d)',
                 user_id, text_idx)
 
@@ -2017,8 +2017,8 @@ def import_texts(message: telebot.types.Message) -> None:
     if 'error' in result:
         bot.reply_to(
             message,
-            f'❌ Ошибка при доступе к папке `{texts_dir}`: {result["error"]}',
-            parse_mode='Markdown',
+            f'❌ Ошибка при доступе к папке <code>{_escape_html(texts_dir)}</code>: {_escape_html(result["error"])}',
+            parse_mode='HTML',
         )
         return
 
@@ -2028,8 +2028,8 @@ def import_texts(message: telebot.types.Message) -> None:
     if imported == 0 and errors == 0:
         bot.reply_to(
             message,
-            f'📂 В папке `{texts_dir}` не найдено .txt файлов.',
-            parse_mode='Markdown',
+            f'📂 В папке <code>{_escape_html(texts_dir)}</code> не найдено .txt файлов.',
+            parse_mode='HTML',
         )
         return
 
@@ -2058,8 +2058,8 @@ def button_analyze(message: telebot.types.Message) -> None:
     stats_data = result['stats']
     freq = dict(itertools.islice(result['frequency'].items(), TOP_WORDS))
     reply = (
-        f'📊 *Результаты анализа корпуса*\n\n'
-        f'*Статистика:*\n'
+        f'📊 <b>Результаты анализа корпуса</b>\n\n'
+        f'<b>Статистика:</b>\n'
         f'  • Слов (всего): {stats_data["total_words"]}\n'
         f'  • Уникальных слов: {stats_data["unique_words"]}\n'
         f'  • Предложений: {stats_data["sentences"]}\n'
@@ -2067,11 +2067,11 @@ def button_analyze(message: telebot.types.Message) -> None:
         f'  • Лексическое разнообразие: {stats_data["lexical_diversity"]:.2%}\n'
         f'  • Токенов: {result["tokens_count"]}\n'
         f'  • Уникальных лемм: {result["lemmas_count"]}\n\n'
-        f'*Топ {TOP_WORDS} слов:*\n'
+        f'<b>Топ {TOP_WORDS} слов:</b>\n'
     )
     for word, count in freq.items():
         reply += f'  {word}: {count}\n'
-    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
+    _send_long_message(message.chat.id, reply, parse_mode='HTML', reply_to_message=message)
 def button_frequency(message: telebot.types.Message) -> None:
     """Handle '📈 Частота' button – show word frequencies for the user's corpus."""
     logger.info('[Button/📈] user_id=%s', message.from_user.id)
@@ -2086,10 +2086,10 @@ def button_frequency(message: telebot.types.Message) -> None:
         bot.reply_to(message, 'Нет слов для частотного анализа.')
         return
     top = sorted(freq_dict.items(), key=lambda x: x[1], reverse=True)[:20]
-    lines = ['📊 *Частота слов корпуса:*\n\n']
+    lines = ['📊 <b>Частота слов корпуса:</b>\n\n']
     for word, count in top:
         lines.append(f'  {word}: {count}\n')
-    _send_long_message(message.chat.id, ''.join(lines), parse_mode='Markdown',
+    _send_long_message(message.chat.id, ''.join(lines), parse_mode='HTML',
                        reply_to_message=message)
 
 
@@ -2126,14 +2126,14 @@ def button_stats(message: telebot.types.Message) -> None:
     logger.info('[Button/📋] Статистика корпуса %d симв. для user_id=%s', len(text), user_id)
     s = analyzer.get_text_stats(text)
     reply = (
-        f'📈 *Статистика корпуса*\n\n'
+        f'📈 <b>Статистика корпуса</b>\n\n'
         f'  • Слов (всего): {s["total_words"]}\n'
         f'  • Уникальных слов: {s["unique_words"]}\n'
         f'  • Предложений: {s["sentences"]}\n'
         f'  • Средняя длина слова: {s["avg_word_length"]:.2f}\n'
         f'  • Лексическое разнообразие: {s["lexical_diversity"]:.2%}\n'
     )
-    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
+    _send_long_message(message.chat.id, reply, parse_mode='HTML', reply_to_message=message)
 
 
 @bot.message_handler(func=lambda m: m.text == '📚 Корпус')
@@ -2144,14 +2144,14 @@ def button_corpus(message: telebot.types.Message) -> None:
     corpus_stats = db.get_corpus_stats(SHARED_CORPUS_USER_ID)
     collect_status = '🟢 включён' if requesting_user_id in _auto_collect_enabled else '🔴 отключён'
     reply = (
-        f'📚 *Общий корпус*\n\n'
+        f'📚 <b>Общий корпус</b>\n\n'
         f'  • Текстов сохранено: {corpus_stats["count"]}\n'
         f'  • Всего символов: {corpus_stats["total_chars"]}\n\n'
         f'Автосбор: {collect_status}\n'
         f'Используйте /collect или кнопку 🔄 Автосбор, чтобы включить/выключить автоматическое '
         f'сохранение текстовых сообщений в корпус.'
     )
-    _send_long_message(message.chat.id, reply, parse_mode='Markdown', reply_to_message=message)
+    _send_long_message(message.chat.id, reply, parse_mode='HTML', reply_to_message=message)
 
 
 @bot.message_handler(func=lambda m: m.text == '📂 Загрузить')
@@ -2190,15 +2190,15 @@ def button_import(message: telebot.types.Message) -> None:
     result = db.import_texts_from_directory(SHARED_CORPUS_USER_ID, texts_dir, analyzer=analyzer)
     if 'error' in result:
         bot.reply_to(message,
-                     f'❌ Ошибка при доступе к папке `{texts_dir}`: {result["error"]}',
-                     parse_mode='Markdown')
+                     f'❌ Ошибка при доступе к папке <code>{_escape_html(texts_dir)}</code>: {_escape_html(result["error"])}',
+                     parse_mode='HTML')
         return
     imported = result['imported']
     errors = result['errors']
     if imported == 0 and errors == 0:
         bot.reply_to(message,
-                     f'📂 В папке `{texts_dir}` не найдено .txt файлов.',
-                     parse_mode='Markdown')
+                     f'📂 В папке <code>{_escape_html(texts_dir)}</code> не найдено .txt файлов.',
+                     parse_mode='HTML')
         return
     reply = f'✅ Загружено {imported} {_ru_plural(imported, "текст", "текста", "текстов")}'
     if errors:
@@ -2219,19 +2219,19 @@ def toggle_collect(message: telebot.types.Message) -> None:
         logger.info('[/collect] Автосбор отключён для user_id=%s', user_id)
         bot.reply_to(
             message,
-            '🔴 *Автосбор отключён.*\n'
+            '🔴 <b>Автосбор отключён.</b>\n'
             'Текстовые сообщения больше не будут автоматически сохраняться в корпус.',
-            parse_mode='Markdown',
+            parse_mode='HTML',
         )
     else:
         _auto_collect_enabled.add(user_id)
         logger.info('[/collect] Автосбор включён для user_id=%s', user_id)
         bot.reply_to(
             message,
-            '🟢 *Автосбор включён.*\n'
+            '🟢 <b>Автосбор включён.</b>\n'
             f'Теперь каждое текстовое сообщение автоматически сохраняется в общий корпус '
             f'(через {COLLECT_WINDOW} {_ru_plural(COLLECT_WINDOW, "секунду", "секунды", "секунд")} после последнего).',
-            parse_mode='Markdown',
+            parse_mode='HTML',
         )
 
 
@@ -2272,8 +2272,8 @@ def _send_yandex_ai_menu(chat_id: int) -> None:
     )
     bot.send_message(
         chat_id,
-        '🤖 *Яндекс ИИ* — выберите операцию:',
-        parse_mode='Markdown',
+        '🤖 <b>Яндекс ИИ</b> — выберите операцию:',
+        parse_mode='HTML',
         reply_markup=markup,
     )
 
@@ -2367,17 +2367,17 @@ def _receive_yai_translate_text(message: telebot.types.Message,
     if len(words) == 1 and analyzer._uniparser is not None:
         info_list = analyzer.get_morphological_info(text)
         if info_list:
-            lines = [f'\n🔬 *Морфологический анализ:*']
+            lines = [f'\n🔬 <b>Морфологический анализ:</b>']
             for i, info in enumerate(info_list, 1):
                 if len(info_list) > 1:
-                    lines.append(f'*Вариант {i}:*')
-                lines.append(f'  Лемма: {_escape_markdown(info["lemma"])}')
-                lines.append(f'  Часть речи: {_escape_markdown(info["pos"])}')
+                    lines.append(f'<b>Вариант {i}:</b>')
+                lines.append(f'  Лемма: {_escape_html(info["lemma"])}')
+                lines.append(f'  Часть речи: {_escape_html(info["pos"])}')
                 if info['features']:
-                    lines.append(f'  Признаки: {_escape_markdown(", ".join(info["features"]))}')
+                    lines.append(f'  Признаки: {_escape_html(", ".join(info["features"]))}')
             morph_msg = '\n'.join(lines)
             if morph_msg:
-                _send_long_message(chat_id, morph_msg, parse_mode='Markdown')
+                _send_long_message(chat_id, morph_msg, parse_mode='HTML')
 
 
 def _send_yai_translation_result(chat_id: int, original: str, translated: str,
@@ -2394,10 +2394,10 @@ def _send_yai_translation_result(chat_id: int, original: str, translated: str,
     is_word = len(words) == 1
     kind_label = 'слова' if is_word else 'предложения'
 
-    header = f'🤖 *Перевод {kind_label}* ({direction_label}):\n\n'
-    body = f'📝 Оригинал: _{_escape_markdown(original)}_\n🔄 Перевод: *{_escape_markdown(translated)}*'
+    header = f'🤖 <b>Перевод {kind_label}</b> ({direction_label}):\n\n'
+    body = f'📝 Оригинал: <i>{_escape_html(original)}</i>\n🔄 Перевод: <b>{_escape_html(translated)}</b>'
     full_reply = header + body
-    _send_long_message(chat_id, full_reply, parse_mode='Markdown')
+    _send_long_message(chat_id, full_reply, parse_mode='HTML')
 
 
 @bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_EXPLAIN)
@@ -2466,9 +2466,9 @@ def _receive_yai_explain_text(message: telebot.types.Message) -> None:
     if not yandex_llm.available:
         bot.send_message(
             chat_id,
-            '⚠️ Функция объяснения недоступна: задайте *YANDEX\\_IAM\\_TOKEN* или '
-            '*YANDEX\\_API\\_KEY* и *YANDEX\\_FOLDER\\_ID* в файле `.env`.',
-            parse_mode='Markdown',
+            '⚠️ Функция объяснения недоступна: задайте <b>YANDEX_IAM_TOKEN</b> или '
+            '<b>YANDEX_API_KEY</b> и <b>YANDEX_FOLDER_ID</b> в файле <code>.env</code>.',
+            parse_mode='HTML',
         )
         return
 
@@ -2529,23 +2529,23 @@ def _send_yai_explanation_result(
     The AI-generated *explanation* is always sent first.  When *corpus_examples*
     are provided a separate section with real corpus sentences is appended.
     """
-    header = f'📚 *Объяснение слова:* _{_escape_markdown(word)}_\n\n'
-    full_reply = header + _escape_markdown(explanation)
+    header = f'📚 <b>Объяснение слова:</b> <i>{_escape_html(word)}</i>\n\n'
+    full_reply = header + _escape_html(explanation)
 
     # Build optional corpus-examples block.
     corpus_block = ''
     if corpus_examples:
-        lines = ['\n\n📖 *Примеры из корпуса:*']
+        lines = ['\n\n📖 <b>Примеры из корпуса:</b>']
         for i, sentence in enumerate(corpus_examples, 1):
-            lines.append(f'  *{i}.* {_escape_markdown(sentence)}')
+            lines.append(f'  <b>{i}.</b> {_escape_html(sentence)}')
         corpus_block = '\n'.join(lines)
 
     if len(full_reply) + len(corpus_block) <= TELEGRAM_MAX_MESSAGE_LEN:
-        bot.send_message(chat_id, full_reply + corpus_block, parse_mode='Markdown')
+        bot.send_message(chat_id, full_reply + corpus_block, parse_mode='HTML')
     else:
-        _send_long_message(chat_id, full_reply, parse_mode='Markdown')
+        _send_long_message(chat_id, full_reply, parse_mode='HTML')
         if corpus_block:
-            _send_long_message(chat_id, corpus_block.strip(), parse_mode='Markdown')
+            _send_long_message(chat_id, corpus_block.strip(), parse_mode='HTML')
 
 
 @bot.callback_query_handler(func=lambda call: call.data == _YAI_CB_ANALYZE)
@@ -2572,9 +2572,9 @@ def _receive_yai_analyze_text(message: telebot.types.Message) -> None:
     if not yandex_llm.available:
         bot.send_message(
             chat_id,
-            '⚠️ Функция анализа недоступна: задайте *YANDEX\\_IAM\\_TOKEN* или '
-            '*YANDEX\\_API\\_KEY* и *YANDEX\\_FOLDER\\_ID* в файле `.env`.',
-            parse_mode='Markdown',
+            '⚠️ Функция анализа недоступна: задайте <b>YANDEX_IAM_TOKEN</b> или '
+            '<b>YANDEX_API_KEY</b> и <b>YANDEX_FOLDER_ID</b> в файле <code>.env</code>.',
+            parse_mode='HTML',
         )
         return
 
@@ -2605,9 +2605,9 @@ def _receive_yai_analyze_text(message: telebot.types.Message) -> None:
     # Save analysis to database.
     db.save_yandex_ai_analysis(user_id, text, analysis)
 
-    header = '🎯 *Анализ текста (Яндекс ИИ):*\n\n'
+    header = '🎯 <b>Анализ текста (Яндекс ИИ):</b>\n\n'
     full_reply = header + analysis
-    _send_long_message(chat_id, full_reply, parse_mode='Markdown')
+    _send_long_message(chat_id, full_reply, parse_mode='HTML')
     logger.info('[YAI/analyze] Анализ отправлен user_id=%s', user_id)
 
 
@@ -2650,8 +2650,8 @@ def _receive_translate_text(message: telebot.types.Message, source_lang: str,
     if not _DEEP_TRANSLATOR_AVAILABLE:
         bot.send_message(
             chat_id,
-            '⚠️ Машинный перевод недоступен: библиотека *deep-translator* не установлена.',
-            parse_mode='Markdown',
+            '⚠️ Машинный перевод недоступен: библиотека <b>deep-translator</b> не установлена.',
+            parse_mode='HTML',
         )
         return
 
@@ -2683,9 +2683,9 @@ def _receive_translate_text(message: telebot.types.Message, source_lang: str,
         direction_label = 'рус → ос'
     else:
         direction_label = f'{source_lang} → {target_lang}'
-    header = f'🌐 *Перевод* ({direction_label}):\n\n'
+    header = f'🌐 <b>Перевод</b> ({direction_label}):\n\n'
     full_reply = header + translated
-    _send_long_message(chat_id, full_reply, parse_mode='Markdown')
+    _send_long_message(chat_id, full_reply, parse_mode='HTML')
     logger.info('[Translator] Перевод отправлен user_id=%s', user_id)
 
 
