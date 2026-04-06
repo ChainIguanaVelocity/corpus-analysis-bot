@@ -1279,7 +1279,7 @@ def _send_long_message(
     text: str,
     parse_mode: str | None = None,
     *,
-    reply_to_message: 'telebot.types.Message | None' = None,
+    reply_to_message: telebot.types.Message | None = None,
     reply_markup=None,
 ) -> None:
     """Send *text* to *chat_id*, splitting it into chunks when it exceeds Telegram's limit.
@@ -2376,7 +2376,8 @@ def _receive_yai_translate_text(message: telebot.types.Message,
                 if info['features']:
                     lines.append(f'  Признаки: {_escape_markdown(", ".join(info["features"]))}')
             morph_msg = '\n'.join(lines)
-            _send_long_message(chat_id, morph_msg, parse_mode='Markdown')
+            if morph_msg:
+                _send_long_message(chat_id, morph_msg, parse_mode='Markdown')
 
 
 def _send_yai_translation_result(chat_id: int, original: str, translated: str,
