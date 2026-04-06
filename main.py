@@ -1,6 +1,7 @@
 import itertools
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -171,6 +172,16 @@ class Database:
                 user_id INTEGER NOT NULL,
                 original_text TEXT NOT NULL,
                 analysis_result TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )'''
+        )
+        self._create_table(
+            '''CREATE TABLE IF NOT EXISTS similarity_searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                query_text TEXT NOT NULL,
+                results TEXT NOT NULL,
+                similarity_method TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )'''
         )
@@ -544,6 +555,24 @@ class Database:
 
         logger.info('[DB] Импорт завершён: успешно=%d, ошибок=%d', imported, errors)
         return {'imported': imported, 'errors': errors}
+
+    def save_similarity_search(self, user_id: int, query_text: str,
+                                results: str, similarity_method: str = 'combined') -> int | None:
+        """Save a similarity search result to the cache. Returns the new row id."""
+        logger.info('[DB] Сохранение поиска похожих для user_id=%s', user_id)
+        sql = (
+            'INSERT INTO similarity_searches(user_id, query_text, results, similarity_method) '
+            'VALUES(?, ?, ?, ?)'
+        )
+        try:
+            cur = self.conn.cursor()
+            cur.execute(sql, (user_id, query_text, results, similarity_method))
+            self.conn.commit()
+            logger.info('[DB] Поиск похожих сохранён, row_id=%s', cur.lastrowid)
+            return cur.lastrowid
+        except Error as e:
+            logger.error('[DB] save_similarity_search error: %s', e)
+            return None
 
 # ---------------------------------------------------------------------------
 # Text analyser  (previously text_analyzer.py)
@@ -1323,6 +1352,7 @@ def start(message: telebot.types.Message) -> None:
         telebot.types.KeyboardButton('📥 Импорт'),
         telebot.types.KeyboardButton('🔄 Автосбор'),
         telebot.types.KeyboardButton('🔎 Поиск'),
+        telebot.types.KeyboardButton('🔍 Похожие'),
         telebot.types.KeyboardButton('🔬 Морфо'),
         telebot.types.KeyboardButton('🌐 Переводчик'),
         telebot.types.KeyboardButton('🤖 Яндекс ИИ'),
@@ -1348,6 +1378,7 @@ def start(message: telebot.types.Message) -> None:
         '  /import_texts — импортировать .txt файлы из папки texts/\n'
         '  /collect — включить/выключить автосбор текстовых сообщений\n'
         '  /search &lt;слово&gt; — найти предложения с нужным словом в корпусе\n'
+        '  /similar &lt;текст&gt; — найти семантически похожие предложения в корпусе\n'
         '  /morph &lt;слово&gt; — морфологический анализ слова\n'
         '  /morph_stats — статистика частей речи в корпусе\n'
         '  /morph_freq — частота грамматических форм в корпусе\n'
@@ -1626,6 +1657,156 @@ def _word_matches_flexible(word_norm: str, sentence: str) -> bool:
     return bool(re.search(pattern, sentence_norm))
 
 
+# ---------------------------------------------------------------------------
+# Semantic similarity helpers (no ML/AI — token-based methods only)
+# ---------------------------------------------------------------------------
+
+SIMILAR_TOP_N: int = 10   # number of top results to return
+SIMILAR_MIN_SCORE: float = 0.05  # minimum combined score to include a result
+
+
+def _tokenize_for_similarity(text: str) -> list[str]:
+    """Tokenize *text* for similarity comparison.
+
+    Lowercases, applies Ossetian normalisation, then extracts word tokens
+    while discarding stop-words.
+    """
+    normalized = _normalize_ossetian(text)
+    tokens = _TOKEN_RE.findall(normalized)
+    return [t for t in tokens if t not in _OSSETIAN_STOPWORDS and len(t) > 1]
+
+
+def _jaccard_similarity(tokens_a: list[str], tokens_b: list[str]) -> float:
+    """Return Jaccard similarity between two token lists."""
+    set_a = set(tokens_a)
+    set_b = set(tokens_b)
+    if not set_a and not set_b:
+        return 0.0
+    intersection = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return intersection / union if union > 0 else 0.0
+
+
+def _ngram_similarity(tokens_a: list[str], tokens_b: list[str], n: int = 2) -> float:
+    """Return n-gram Jaccard similarity between two token lists."""
+    def get_ngrams(tokens: list[str], n: int) -> set[tuple[str, ...]]:
+        return {tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)}
+
+    ngrams_a = get_ngrams(tokens_a, n)
+    ngrams_b = get_ngrams(tokens_b, n)
+    if not ngrams_a and not ngrams_b:
+        return 0.0
+    intersection = len(ngrams_a & ngrams_b)
+    union = len(ngrams_a | ngrams_b)
+    return intersection / union if union > 0 else 0.0
+
+
+def _cosine_similarity(tokens_a: list[str], tokens_b: list[str]) -> float:
+    """Return TF-based cosine similarity between two token lists."""
+    freq_a = Counter(tokens_a)
+    freq_b = Counter(tokens_b)
+    if not freq_a or not freq_b:
+        return 0.0
+    dot = sum(freq_a[w] * freq_b[w] for w in freq_a if w in freq_b)
+    norm_a = math.sqrt(sum(v ** 2 for v in freq_a.values()))
+    norm_b = math.sqrt(sum(v ** 2 for v in freq_b.values()))
+    return dot / (norm_a * norm_b) if norm_a * norm_b > 0 else 0.0
+
+
+def _combined_similarity(tokens_query: list[str], tokens_candidate: list[str]) -> float:
+    """Return a combined similarity score using Jaccard, bigrams, trigrams and cosine.
+
+    Weights are tuned for short-to-medium Ossetian corpus sentences:
+      40 % cosine (captures word-frequency overlap)
+      30 % Jaccard (fast token-set overlap)
+      20 % bigram similarity (phrase structure)
+      10 % trigram similarity (longer phrase structure)
+    """
+    jaccard = _jaccard_similarity(tokens_query, tokens_candidate)
+    bigram = _ngram_similarity(tokens_query, tokens_candidate, n=2)
+    trigram = _ngram_similarity(tokens_query, tokens_candidate, n=3)
+    cosine = _cosine_similarity(tokens_query, tokens_candidate)
+    return 0.40 * cosine + 0.30 * jaccard + 0.20 * bigram + 0.10 * trigram
+
+
+def _do_similar(message: telebot.types.Message, query: str) -> None:
+    """Core logic for /similar — find semantically similar sentences without AI."""
+    user_id = message.from_user.id
+    logger.info('[/similar] Запрос "%s" от user_id=%s', query[:80], user_id)
+
+    texts_with_names = db.get_corpus_texts_with_names(SHARED_CORPUS_USER_ID)
+    if not texts_with_names:
+        logger.info('[/similar] Общий корпус пуст (user_id=%s)', user_id)
+        bot.reply_to(
+            message,
+            '📭 Общий корпус пуст. Отправьте несколько текстовых сообщений, '
+            'чтобы наполнить его, а затем повторите команду.',
+        )
+        return
+
+    query_tokens = _tokenize_for_similarity(query)
+    if not query_tokens:
+        bot.reply_to(
+            message,
+            '❌ Запрос содержит только стоп-слова или пустой. '
+            'Введите более содержательный текст.',
+        )
+        return
+
+    scored: list[tuple[float, str, str | None]] = []  # (score, sentence, name)
+
+    for text, name in texts_with_names:
+        sentences = [s.strip() for s in _SENTENCE_RE.split(text.strip()) if s.strip()]
+        for sentence in sentences:
+            candidate_tokens = _tokenize_for_similarity(sentence)
+            if not candidate_tokens:
+                continue
+            score = _combined_similarity(query_tokens, candidate_tokens)
+            if score >= SIMILAR_MIN_SCORE:
+                scored.append((score, sentence, name))
+
+    logger.info('[/similar] Оценено %d предложений, запрос="%s" (user_id=%s)',
+                len(scored), query[:80], user_id)
+
+    if not scored:
+        bot.reply_to(
+            message,
+            f'🔍 Похожих текстов для запроса <b>{_escape_html(query)}</b> не найдено.',
+            parse_mode='HTML',
+        )
+        return
+
+    # Sort by score descending; keep top N.
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:SIMILAR_TOP_N]
+
+    # Persist the search for analytics.
+    results_json = json.dumps(
+        [{'score': round(s, 4), 'sentence': t, 'name': n} for s, t, n in top],
+        ensure_ascii=False,
+    )
+    db.save_similarity_search(user_id, query, results_json, similarity_method='combined')
+
+    reply = (
+        f'🔍 <b>Семантически похожие тексты</b>\n'
+        f'Запрос: <i>{_escape_html(query)}</i>\n'
+        f'Найдено: {len(scored)} предложений, показаны топ-{len(top)}\n\n'
+    )
+    for i, (score, sentence, name) in enumerate(top, 1):
+        display = (
+            sentence if len(sentence) <= SEARCH_SENTENCE_DISPLAY_LEN
+            else sentence[:SEARCH_SENTENCE_DISPLAY_LEN - 3] + '...'
+        )
+        work_label = f'📚 <i>{_escape_html(name)}</i>\n' if name else ''
+        reply += (
+            f'<b>{i}.</b> {work_label}'
+            f'<code>{score:.2%}</code> {_escape_html(display)}\n\n'
+        )
+
+    _send_long_message(message.chat.id, reply, parse_mode='HTML', reply_to_message=message)
+    logger.info('[/similar] Результаты отправлены user_id=%s (%d совпадений)', user_id, len(top))
+
+
 def _do_search(message: telebot.types.Message, word: str) -> None:
     """Core search logic shared by /search command and button_search."""
     user_id = message.from_user.id
@@ -1713,6 +1894,35 @@ def search_word(message: telebot.types.Message) -> None:
         return
 
     _do_search(message, word)
+
+
+def _receive_similar_text(message: telebot.types.Message) -> None:
+    """Next-step handler: receives the query text for similarity search."""
+    query = unicodedata.normalize('NFC', (message.text or '').strip())
+    if not query or query.startswith('/'):
+        logger.info('[Button/🔍] Пустой или командный ввод от user_id=%s, поиск похожих отменён',
+                    message.from_user.id)
+        bot.reply_to(message, '❌ Текст не введён. Поиск похожих отменён.')
+        return
+
+    logger.info('[Button/🔍] Поиск похожих для "%s" (user_id=%s, next-step)',
+                query[:80], message.from_user.id)
+    _do_similar(message, query)
+
+
+@bot.message_handler(commands=['similar'])
+def similar_texts(message: telebot.types.Message) -> None:
+    """/similar <текст> — найти семантически похожие предложения в корпусе."""
+    logger.info('[/similar] user_id=%s', message.from_user.id)
+    parts = message.text.split(maxsplit=1)
+    query = parts[1].strip() if len(parts) > 1 else ''
+
+    if not query:
+        sent = bot.reply_to(message, '🔍 Введите текст для поиска похожих предложений:')
+        bot.register_next_step_handler(sent, _receive_similar_text)
+        return
+
+    _do_similar(message, query)
 
 
 # ---------------------------------------------------------------------------
@@ -2168,6 +2378,14 @@ def button_search(message: telebot.types.Message) -> None:
     logger.info('[Button/🔎] user_id=%s', message.from_user.id)
     sent = bot.send_message(message.chat.id, '🔎 Введите слово для поиска:')
     bot.register_next_step_handler(sent, _receive_search_word)
+
+
+@bot.message_handler(func=lambda m: m.text == '🔍 Похожие')
+def button_similar(message: telebot.types.Message) -> None:
+    """Handle '🔍 Похожие' button – prompt for text, then find similar sentences."""
+    logger.info('[Button/🔍] user_id=%s', message.from_user.id)
+    sent = bot.send_message(message.chat.id, '🔍 Введите текст для поиска похожих предложений:')
+    bot.register_next_step_handler(sent, _receive_similar_text)
 
 
 @bot.message_handler(func=lambda m: m.text == '🔬 Морфо')
@@ -2794,6 +3012,7 @@ def _register_commands() -> None:
         telebot.types.BotCommand('import_texts', 'Импортировать .txt файлы из папки texts/'),
         telebot.types.BotCommand('collect',      'Включить/выключить автосбор текстовых сообщений'),
         telebot.types.BotCommand('search',       'Поиск слова в корпусе с примерами предложений'),
+        telebot.types.BotCommand('similar',      'Поиск семантически похожих предложений в корпусе'),
         telebot.types.BotCommand('morph',        'Морфологический анализ слова'),
         telebot.types.BotCommand('morph_stats',  'Статистика частей речи в корпусе'),
         telebot.types.BotCommand('morph_freq',   'Частота грамматических форм в корпусе'),
