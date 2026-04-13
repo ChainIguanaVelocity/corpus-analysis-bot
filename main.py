@@ -34,6 +34,20 @@ except ImportError:
     _DEEP_TRANSLATOR_AVAILABLE = False
     _LangNotSupported = Exception  # type: ignore[assignment,misc]
 
+try:
+    import shahnameh_en as _shahnameh_en
+    _SHAHNAMEH_AVAILABLE = True
+except ImportError:
+    _shahnameh_en = None  # type: ignore[assignment]
+    _SHAHNAMEH_AVAILABLE = False
+
+try:
+    import itihasa as _itihasa
+    _ITIHASA_AVAILABLE = True
+except ImportError:
+    _itihasa = None  # type: ignore[assignment]
+    _ITIHASA_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Configuration  (previously config.py)
 # ---------------------------------------------------------------------------
@@ -2067,6 +2081,220 @@ def morph_freq(message: telebot.types.Message) -> None:
                        reply_to_message=message)
 
 
+# ---------------------------------------------------------------------------
+# Myth corpus search (shahnameh_en / itihasa)
+# ---------------------------------------------------------------------------
+
+def _get_myth_corpus_sentences() -> list[tuple[str, str]]:
+    """Return a flat list of (sentence, source_label) pairs from available myth corpora.
+
+    Tries common attribute shapes exposed by *shahnameh_en* and *itihasa*:
+    - an iterable of strings (one per sentence / verse)
+    - a ``sentences`` attribute (list[str])
+    - a ``text`` or ``corpus`` attribute (single large string, split on sentence boundaries)
+    """
+    results: list[tuple[str, str]] = []
+
+    def _extract(obj, label: str) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        raw: list[str] = []
+        if hasattr(obj, 'sentences'):
+            raw = list(obj.sentences)
+        elif hasattr(obj, 'text'):
+            raw = [s for s in _SENTENCE_RE.split(str(obj.text).strip()) if s]
+        elif hasattr(obj, 'corpus'):
+            raw = [s for s in _SENTENCE_RE.split(str(obj.corpus).strip()) if s]
+        else:
+            try:
+                raw = [s for s in obj if isinstance(s, str)]
+            except TypeError:
+                raw = [s for s in _SENTENCE_RE.split(str(obj).strip()) if s]
+        for s in raw:
+            s = s.strip()
+            if s:
+                pairs.append((s, label))
+        return pairs
+
+    if _SHAHNAMEH_AVAILABLE and _shahnameh_en is not None:
+        try:
+            results.extend(_extract(_shahnameh_en, 'Shahnameh'))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('[myth_search] Ошибка загрузки shahnameh_en: %s', exc)
+
+    if _ITIHASA_AVAILABLE and _itihasa is not None:
+        for attr, label in (('mahabharata', 'Mahabharata'), ('ramayana', 'Ramayana')):
+            sub = getattr(_itihasa, attr, None)
+            if sub is not None:
+                try:
+                    results.extend(_extract(sub, label))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning('[myth_search] Ошибка загрузки itihasa.%s: %s', attr, exc)
+        if not any(label in ('Mahabharata', 'Ramayana') for _, label in results):
+            # Fallback: treat the top-level itihasa module as the corpus.
+            try:
+                results.extend(_extract(_itihasa, 'Itihasa'))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning('[myth_search] Ошибка загрузки itihasa (fallback): %s', exc)
+
+    return results
+
+
+def _search_myth_corpora(query_text: str, max_results: int = 10) -> list[tuple[str, str]]:
+    """Find sentences in the myth corpora that share tokens with *query_text*.
+
+    Uses token overlap (keyword matching) to rank corpus sentences by relevance.
+    Returns a list of (sentence, source_label) pairs, ranked by the number of
+    shared tokens, up to *max_results*.
+    """
+    query_tokens = set(_TOKEN_RE.findall(query_text.lower()))
+    if not query_tokens:
+        return []
+
+    corpus_sentences = _get_myth_corpus_sentences()
+    scored: list[tuple[int, str, str]] = []
+    for sentence, label in corpus_sentences:
+        sent_tokens = set(_TOKEN_RE.findall(sentence.lower()))
+        overlap = len(query_tokens & sent_tokens)
+        if overlap:
+            scored.append((overlap, sentence, label))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [(sentence, label) for _, sentence, label in scored[:max_results]]
+
+
+def _do_myth_search(message: telebot.types.Message, myth_text: str) -> None:
+    """Core myth-search logic: find matches in Shahnameh / Itihasa and analyse with Yandex GPT."""
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    logger.info('[/myth_search] Поиск для user_id=%s, текст=%d симв.', user_id, len(myth_text))
+
+    if not _SHAHNAMEH_AVAILABLE and not _ITIHASA_AVAILABLE:
+        bot.reply_to(
+            message,
+            '⚠️ Корпуса мифов недоступны: библиотеки <code>shahnameh_en</code> и '
+            '<code>itihasa</code> не установлены.',
+            parse_mode='HTML',
+        )
+        return
+
+    matches = _search_myth_corpora(myth_text)
+    logger.info('[/myth_search] Найдено %d совпадений для user_id=%s', len(matches), user_id)
+
+    available = []
+    if _SHAHNAMEH_AVAILABLE:
+        available.append('Shahnameh (shahnameh_en)')
+    if _ITIHASA_AVAILABLE:
+        available.append('Itihasa (itihasa)')
+    corpora_label = ', '.join(available)
+
+    # Build a corpus-passages block to show as supplementary output and pass to the LLM.
+    passages_block = ''
+    if matches:
+        lines = ['\n\n📖 <b>Фрагменты из корпусов:</b>']
+        for i, (sentence, label) in enumerate(matches, 1):
+            display = (
+                sentence if len(sentence) <= SEARCH_SENTENCE_DISPLAY_LEN
+                else sentence[:SEARCH_SENTENCE_DISPLAY_LEN - 3] + '...'
+            )
+            lines.append(f'  <b>{i}.</b> <i>[{_escape_html(label)}]</i> {_escape_html(display)}')
+        lines.append(f'\n<i>Корпуса: {_escape_html(corpora_label)}</i>')
+        passages_block = '\n'.join(lines)
+
+    # --- AI analysis via Yandex GPT ---
+    if not yandex_llm.available:
+        # Graceful fallback: show raw corpus matches without AI commentary.
+        if not matches:
+            bot.reply_to(
+                message,
+                '🔍 Совпадений в корпусах мифов не найдено.\n'
+                'Попробуйте ввести более развёрнутый текст.',
+            )
+            return
+        header = f'📖 <b>Совпадения в корпусах мифов</b>\n<i>Корпуса: {_escape_html(corpora_label)}</i>\n'
+        _send_long_message(chat_id, header + passages_block, parse_mode='HTML',
+                           reply_to_message=message)
+        bot.send_message(
+            chat_id,
+            '⚠️ Анализ ИИ недоступен: задайте <b>YANDEX_IAM_TOKEN</b> или '
+            '<b>YANDEX_API_KEY</b> и <b>YANDEX_FOLDER_ID</b> в файле <code>.env</code>.',
+            parse_mode='HTML',
+        )
+        return
+
+    # Build corpus context string for the LLM prompt.
+    if matches:
+        passages_for_prompt = '\n'.join(
+            f'[{label}] {sentence}' for sentence, label in matches
+        )
+        corpus_context = (
+            f'\n\nРелевантные фрагменты из корпусов ({corpora_label}):\n{passages_for_prompt}'
+        )
+    else:
+        corpus_context = f'\n\nВ корпусах ({corpora_label}) прямых совпадений по ключевым словам не найдено.'
+
+    system_prompt = (
+        'Ты — эксперт по сравнительной мифологии, специализирующийся на персидском эпосе '
+        '"Шахнаме" и санскритских эпосах "Махабхарата" и "Рамаяна". '
+        'Отвечай на русском языке. Структурируй ответ по пронумерованным пунктам.'
+    )
+    user_prompt = (
+        f'Пользователь предоставил следующий текст мифа:\n\n«{myth_text}»'
+        f'{corpus_context}\n\n'
+        'Проведи семантический анализ и найди параллели:\n'
+        '1) Основные мифологические мотивы и образы в тексте пользователя\n'
+        '2) Семантические совпадения с фрагментами из корпусов (если они есть)\n'
+        '3) Параллели в сюжетах, персонажах или символике между этим текстом и '
+        '"Шахнаме" / "Итихасой"\n'
+        '4) Возможное культурное или историческое родство мотивов'
+    )
+
+    bot.send_message(chat_id, '⏳ Анализирую мифологические параллели...')
+    try:
+        ai_analysis = yandex_llm.complete(system_prompt, user_prompt, max_tokens=3000)
+    except RuntimeError as exc:
+        logger.error('[/myth_search] Ошибка LLM для user_id=%s: %s', user_id, exc)
+        bot.send_message(chat_id, f'❌ Не удалось выполнить анализ ИИ: {_escape_html(str(exc))}',
+                         parse_mode='HTML')
+        return
+
+    logger.info('[/myth_search] ИИ-анализ получен для user_id=%s (%d симв.)',
+                user_id, len(ai_analysis))
+
+    header = '🤖 <b>Семантический анализ мифа (Яндекс ИИ):</b>\n\n'
+    full_reply = header + _escape_html(ai_analysis)
+
+    if len(full_reply) + len(passages_block) <= TELEGRAM_MAX_MESSAGE_LEN:
+        _send_long_message(chat_id, full_reply + passages_block, parse_mode='HTML',
+                           reply_to_message=message)
+    else:
+        _send_long_message(chat_id, full_reply, parse_mode='HTML', reply_to_message=message)
+        if passages_block:
+            _send_long_message(chat_id, passages_block.strip(), parse_mode='HTML')
+
+
+def _receive_myth_search_text(message: telebot.types.Message) -> None:
+    """Next-step handler: receives the myth text to search against the corpora."""
+    text = (message.text or '').strip()
+    if not text or text.startswith('/'):
+        logger.info('[/myth_search] Пустой ввод от user_id=%s, поиск отменён',
+                    message.from_user.id)
+        bot.reply_to(message, '❌ Текст не введён. Поиск отменён.')
+        return
+    _do_myth_search(message, text)
+
+
+@bot.message_handler(commands=['myth_search'])
+def myth_search(message: telebot.types.Message) -> None:
+    """/myth_search <text> — AI-powered semantic analysis of a myth against Shahnameh and Itihasa corpora."""
+    logger.info('[/myth_search] user_id=%s', message.from_user.id)
+    parts = message.text.split(maxsplit=1)
+    if len(parts) > 1:
+        _do_myth_search(message, parts[1].strip())
+    else:
+        sent = bot.reply_to(message, '📖 Введите текст мифа для поиска семантических совпадений:')
+        bot.register_next_step_handler(sent, _receive_myth_search_text)
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srch:'))
 def search_open_text_menu(call: telebot.types.CallbackQuery) -> None:
     """Show work title and viewing options when the user taps 'Open text'."""
@@ -3017,6 +3245,7 @@ def _register_commands() -> None:
         telebot.types.BotCommand('morph_stats',  'Статистика частей речи в корпусе'),
         telebot.types.BotCommand('morph_freq',   'Частота грамматических форм в корпусе'),
         telebot.types.BotCommand('translate',    'Перевести корпус на указанный язык'),
+        telebot.types.BotCommand('myth_search',  'Поиск семантических совпадений в корпусах мифов (Shahnameh, Itihasa)'),
     ]
     bot.set_my_commands(commands)
     logger.info('Команды меню зарегистрированы (%d команд)', len(commands))

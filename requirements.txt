@@ -9,6 +9,10 @@ wordcloud~=1.9.4
 # Ossetian morphological analysis
 uniparser-ossetic~=2.0
 
+# Mythological text corpora
+shahnameh_en
+itihasa
+
 # Machine translation
 deep-translator~=1.11
 requests~=2.31
